@@ -46,7 +46,8 @@ echo "[5/5] GitHub 연결 및 업로드..."
 # 이미 remote가 등록되어 있으면 제거 후 재등록
 git remote remove origin 2>/dev/null
 git remote add origin "$REPO_URL"
-git push -u origin main
+# --force: repo 생성 시 README 등 초기파일이 있어도 덮어쓰기
+git push -u origin main --force
 
 echo ""
 echo "=== 완료! ==="
