@@ -1,0 +1,108 @@
+name: ATR Trailing Stop Monitor
+
+# ─────────────────────────────────────────────────────────────
+# 스케줄 (UTC 기준 / KST = UTC+9)
+#
+#  장중 30분 주기 : KST 09:00~15:30  =  UTC 00:00~06:30
+#  장마감 리포트  : KST 15:35         =  UTC 06:35
+#  미국장 개장 전 : KST 22:55         =  UTC 13:55
+# ─────────────────────────────────────────────────────────────
+on:
+  schedule:
+    # 장중 30분 주기 Stop 체크 (UTC 00:00 ~ 06:30, 평일)
+    - cron: '0,30 0-5 * * 1-5'
+    - cron: '0    6   * * 1-5'
+
+    # 장마감 후 일일 리포트 (UTC 06:35, 평일)
+    - cron: '35 6 * * 1-5'
+
+    # 미국장 개장 전 리포트 (UTC 13:55, 평일)
+    - cron: '55 13 * * 1-5'
+
+  # 수동 실행 (Actions 탭에서 직접 트리거)
+  workflow_dispatch:
+    inputs:
+      job:
+        description: '실행할 작업'
+        required: true
+        default: 'stop_check'
+        type: choice
+        options:
+          - stop_check
+          - daily_report
+          - trigger_check
+
+jobs:
+  atr-monitor:
+    runs-on: ubuntu-latest
+
+    # stop_levels.json 변경 후 repo에 push하기 위한 쓰기 권한
+    permissions:
+      contents: write
+
+    steps:
+      # ── 1. 코드 체크아웃 ──────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 2. Python 설정 ────────────────────────────────────
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. 의존성 설치 ────────────────────────────────────
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 4. 실행할 작업 결정 ───────────────────────────────
+      #   cron 시간에 따라 GHA_JOB 환경변수를 동적으로 설정
+      #   - UTC 06:35 / 13:55 → daily_report
+      #   - 그 외 → stop_check
+      - name: Determine job type
+        id: job_type
+        run: |
+          MINUTE=$(date -u +%M)
+          HOUR=$(date -u +%H)
+
+          # 수동 실행 시 입력값 우선
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "GHA_JOB=${{ inputs.job }}" >> $GITHUB_ENV
+          elif [ "$HOUR" = "06" ] && [ "$MINUTE" = "35" ]; then
+            echo "GHA_JOB=daily_report" >> $GITHUB_ENV
+          elif [ "$HOUR" = "13" ] && [ "$MINUTE" = "55" ]; then
+            echo "GHA_JOB=daily_report" >> $GITHUB_ENV
+          else
+            echo "GHA_JOB=stop_check" >> $GITHUB_ENV
+          fi
+
+      # ── 5. ATR 모니터 실행 ────────────────────────────────
+      - name: Run ATR Monitor
+        env:
+          # 텔레그램
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 계좌 설정
+          ACCOUNT_SIZE:       ${{ secrets.ACCOUNT_SIZE }}
+          RISK_PER_TRADE:     ${{ secrets.RISK_PER_TRADE }}
+          # 포트폴리오 종목 목록 (JSON 문자열, GitHub Secret으로 관리)
+          # 형식: {"국내주식":["005930.KS"],"해외주식":["AAPL","NVDA"],"암호화폐":["BTC-USD"],"ETF":["SPY"]}
+          STOCK_LIST:         ${{ secrets.STOCK_LIST }}
+          # GitHub Actions 플래그
+          GITHUB_ACTIONS:     'true'
+        run: python monitor.py
+
+      # ── 6. stop_levels.json 변경 시 커밋 & 푸시 ─────────
+      - name: Commit updated stop levels
+        run: |
+          git config user.name  "ATR Monitor Bot"
+          git config user.email "atr-monitor-bot@noreply.github.com"
+          # data 디렉터리가 없으면 생성 (첫 실행 대비)
+          mkdir -p data
+          git add data/stop_levels.json
+          # 변경 없으면 커밋 건너뜀
+          git diff --cached --quiet || git commit -m "chore: update ATR stop levels [skip ci]"
+          git push
