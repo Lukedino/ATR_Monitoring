@@ -286,6 +286,100 @@ def advance_stage(symbol: str) -> int:
 
 
 # ─────────────────────────────────────────────────────────────
+# 트리거 알림 중복 방지 (alert_log)
+#
+# stop_levels.json 내 "alert_log" 섹션에 저장:
+# {
+#   "AAPL": {
+#     "date":     "2026-02-27",
+#     "triggers": ["SURGE +5.2%", "VOLUME 320%"],
+#     "close":    185.43,
+#     "stop":     160.0
+#   }
+# }
+#
+# 재발송 조건 (아래 중 하나라도 해당):
+#   1) 오늘 발송 이력 없음
+#   2) 트리거 종류 변경 (새 트리거 추가 / 기존 제거)
+#   3) Stop 레벨이 0.5% 이상 변동
+#   4) 현재가가 2% 이상 변동
+# ─────────────────────────────────────────────────────────────
+
+def _load_alert_log() -> dict:
+    """alert_log 섹션 로드."""
+    raw = _load_raw()
+    return raw.get("alert_log", {})
+
+
+def _save_alert_log(log: dict) -> None:
+    """alert_log 섹션 저장."""
+    raw = _load_raw()
+    raw["alert_log"] = log
+    _save_raw(raw)
+
+
+def should_send_trigger_alert(
+    symbol:      str,
+    new_triggers: list[str],
+    new_close:   float,
+    new_stop:    float | None,
+) -> bool:
+    """
+    트리거 알림 발송 여부를 판단합니다.
+
+    Returns
+    -------
+    True  → 발송 필요
+    False → 오늘 이미 동일 조건으로 발송됨 (스킵)
+    """
+    log   = _load_alert_log()
+    today = datetime.now().strftime("%Y-%m-%d")
+    entry = log.get(symbol)
+
+    # ① 오늘 발송 이력 없음
+    if entry is None or entry.get("date") != today:
+        return True
+
+    # ② 트리거 종류 변경 (접두어 기준: "SURGE", "VOLUME", "GAP", "STOP_NEAR")
+    def _types(tlist: list[str]) -> set[str]:
+        return {t.split()[0] for t in tlist}
+
+    if _types(new_triggers) != _types(entry.get("triggers", [])):
+        return True
+
+    # ③ Stop 레벨 0.5% 이상 변동
+    prev_stop = entry.get("stop")
+    if new_stop is not None and prev_stop is not None and prev_stop > 0:
+        if abs(new_stop - prev_stop) / prev_stop > 0.005:
+            return True
+
+    # ④ 현재가 2% 이상 변동
+    prev_close = entry.get("close", 0.0)
+    if prev_close > 0 and abs(new_close - prev_close) / prev_close > 0.02:
+        return True
+
+    return False
+
+
+def mark_trigger_sent(
+    symbol:      str,
+    triggers:    list[str],
+    close:       float,
+    stop:        float | None,
+) -> None:
+    """트리거 알림 발송 기록을 저장합니다."""
+    log = _load_alert_log()
+    log[symbol] = {
+        "date":     datetime.now().strftime("%Y-%m-%d"),
+        "triggers": triggers,
+        "close":    close,
+        "stop":     stop,
+    }
+    _save_alert_log(log)
+    logger.debug("트리거 알림 기록: %s  %s", symbol, triggers)
+
+
+# ─────────────────────────────────────────────────────────────
 # 요약 출력
 # ─────────────────────────────────────────────────────────────
 

@@ -19,7 +19,7 @@ import matplotlib.dates as mdates
 import matplotlib.patches as mpatches
 import pandas as pd
 
-from config import ATR_PERIOD, CHART_LOOKBACK, CHART_OUTPUT_DIR
+from config import ATR_PERIOD, CHART_LOOKBACK, CHART_OUTPUT_DIR, fmt_symbol, fmt_price
 from atr_calculator import calc_atr, calc_atr_pct, calc_chandelier_stop
 
 logger = logging.getLogger(__name__)
@@ -116,12 +116,13 @@ def plot_atr_chart(
         gridspec_kw={"height_ratios": [3.5, 1.5, 1.5]},
     )
 
-    # 제목에 Stop 정보 포함
-    stop_info = f"  Stop={chandelier.stop_level:,.2f}({chandelier.dist_to_stop_pct:.1f}%)" if chandelier else ""
-    mult_info = f"  x{chandelier.multiple}" if chandelier else ""
+    # 제목에 종목명 + Stop 정보 포함
+    sym_display = fmt_symbol(symbol)
+    stop_info   = f"  Stop={fmt_price(symbol, chandelier.stop_level)}({chandelier.dist_to_stop_pct:.1f}%)" if chandelier else ""
+    mult_info   = f"  x{chandelier.multiple}" if chandelier else ""
     fig.suptitle(
-        f"{symbol} [{chandelier.market if chandelier else '?'}]{mult_info}  |  ATR({period}){stop_info}",
-        fontsize=13, fontweight="bold",
+        f"{sym_display} [{chandelier.market if chandelier else '?'}]{mult_info}  |  ATR({period}){stop_info}",
+        fontsize=12, fontweight="bold",
     )
 
     # ── 상단: 종가 + Chandelier Stop ────────────────────────
@@ -145,14 +146,15 @@ def plot_atr_chart(
     if registered_stop is not None:
         ax_price.axhline(
             registered_stop, color="#e377c2", linewidth=2, linestyle="-.",
-            label=f"등록 Stop {registered_stop:,.2f}", zorder=5,
+            label=f"등록 Stop {fmt_price(symbol, registered_stop)}", zorder=5,
         )
 
     # Highest High 마커
     if chandelier:
         ax_price.axhline(
             chandelier.highest_high, color="#bcbd22", linewidth=1,
-            linestyle=":", alpha=0.8, label=f"Highest High {chandelier.highest_high:,.2f}",
+            linestyle=":", alpha=0.8,
+            label=f"Highest High {fmt_price(symbol, chandelier.highest_high)}",
         )
 
     ax_price.set_ylabel("가격")
@@ -220,11 +222,13 @@ def plot_portfolio_atr_bar(
         logger.warning("포트폴리오 요약 데이터 없음 — 차트 생성 건너뜀")
         return b"" if as_bytes else ""
 
-    df_sorted = summary_df.sort_values("ATR%", ascending=True)
-    colors    = ["#d62728" if s else "#1f77b4" for s in df_sorted["Spike"]]
+    df_sorted   = summary_df.sort_values("ATR%", ascending=True).copy()
+    # Y축 레이블에 종목명 표시
+    df_sorted["Label"] = df_sorted["Symbol"].apply(fmt_symbol)
+    colors             = ["#d62728" if s else "#1f77b4" for s in df_sorted["Spike"]]
 
-    fig, ax = plt.subplots(figsize=(10, max(4, len(df_sorted) * 0.45)))
-    bars = ax.barh(df_sorted["Symbol"], df_sorted["ATR%"], color=colors)
+    fig, ax = plt.subplots(figsize=(10, max(4, len(df_sorted) * 0.5)))
+    bars = ax.barh(df_sorted["Label"], df_sorted["ATR%"], color=colors)
 
     # 값 레이블
     for bar, val in zip(bars, df_sorted["ATR%"]):

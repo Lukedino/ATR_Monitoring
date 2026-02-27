@@ -16,7 +16,12 @@ from datetime import datetime
 
 import requests
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config import (
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
+    fmt_price,
+    fmt_symbol,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,14 +123,15 @@ def send_photo(image_bytes: bytes, caption: str = "") -> bool:
 
 def fmt_spike_alert(symbol: str, atr: float, atr_avg: float, atr_pct: float) -> str:
     """ATR 스파이크 단일 종목 알림 메시지 생성."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now   = datetime.now().strftime("%Y-%m-%d %H:%M")
     ratio = atr / atr_avg if atr_avg > 0 else 0
+    sym_display = fmt_symbol(symbol)
     return (
         f"⚠️ *ATR 스파이크 알림*\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"심볼: `{symbol}`\n"
-        f"현재 ATR: `{atr:.4f}`\n"
-        f"20일 평균 ATR: `{atr_avg:.4f}`\n"
+        f"심볼: `{sym_display}`\n"
+        f"현재 ATR: `{fmt_price(symbol, atr)}`\n"
+        f"20일 평균 ATR: `{fmt_price(symbol, atr_avg)}`\n"
         f"배율: `{ratio:.2f}x`\n"
         f"ATR%: `{atr_pct:.2f}%`\n"
         f"시각: `{now}`"
@@ -134,7 +140,7 @@ def fmt_spike_alert(symbol: str, atr: float, atr_avg: float, atr_pct: float) -> 
 
 def fmt_daily_report(summary_df, account_size: float) -> str:
     """일별 포트폴리오 ATR 현황 리포트 메시지 생성."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now         = datetime.now().strftime("%Y-%m-%d %H:%M")
     spike_count = int(summary_df["Spike"].sum()) if "Spike" in summary_df.columns else 0
 
     lines = [
@@ -145,15 +151,16 @@ def fmt_daily_report(summary_df, account_size: float) -> str:
         f"모니터링 종목: `{len(summary_df)}개`",
         f"스파이크 감지: `{spike_count}개`",
         "",
-        f"{'심볼':<14} {'종가':>10} {'ATR':>8} {'ATR%':>6} {'스파이크'}",
-        "─" * 54,
     ]
 
     for _, row in summary_df.iterrows():
-        spike_mark = "🔴" if row.get("Spike", False) else "🟢"
+        sym         = row["Symbol"]
+        spike_mark  = "🔴" if row.get("Spike", False) else "🟢"
+        sym_display = fmt_symbol(sym)
+        price_str   = fmt_price(sym, row["Close"])
         lines.append(
-            f"`{row['Symbol']:<14}` {row['Close']:>10,.3f} {row['ATR']:>8.4f} "
-            f"{row['ATR%']:>5.2f}%  {spike_mark}"
+            f"{spike_mark} `{sym_display}`\n"
+            f"  종가: `{price_str}`  ATR%: `{row['ATR%']:.2f}%`"
         )
 
     return "\n".join(lines)
@@ -169,14 +176,15 @@ def fmt_position_report(position_results) -> str:
         "",
     ]
     for r in sorted(position_results, key=lambda x: x.atr_pct, reverse=True):
+        sym_display = fmt_symbol(r.symbol)
         lines += [
-            f"*{r.symbol}* [{r.market}] `x{r.multiple}`",
-            f"  현재가: `{r.close_price:,.4f}`  ATR%: `{r.atr_pct:.2f}%`",
+            f"*{sym_display}* [{r.market}] `x{r.multiple}`",
+            f"  현재가: `{fmt_price(r.symbol, r.close_price)}`  ATR%: `{r.atr_pct:.2f}%`",
             f"  권장수량: `{int(r.quantity)}주`  포지션금액: `{r.position_value:,.0f}원`",
-            f"  손절가: `{r.stop_loss_price:,.4f}`",
-            f"  1차: `{r.target_1:,.4f}` → {r.sell_1}주  "
-            f"2차: `{r.target_2:,.4f}` → {r.sell_2}주  "
-            f"3차: `{r.target_3:,.4f}` → {r.sell_3}주",
+            f"  손절가: `{fmt_price(r.symbol, r.stop_loss_price)}`",
+            f"  1차: `{fmt_price(r.symbol, r.target_1)}` → {r.sell_1}주  "
+            f"2차: `{fmt_price(r.symbol, r.target_2)}` → {r.sell_2}주  "
+            f"3차: `{fmt_price(r.symbol, r.target_3)}` → {r.sell_3}주",
             "",
         ]
     return "\n".join(lines)
@@ -188,15 +196,17 @@ def fmt_position_report(position_results) -> str:
 
 def fmt_stop_update(update_result) -> str:
     """Stop 갱신 알림 메시지 (stop_manager.UpdateResult 사용)."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    chg = update_result.change_pct
+    now         = datetime.now().strftime("%Y-%m-%d %H:%M")
+    sym         = update_result.symbol
+    chg         = update_result.change_pct
+    sym_display = fmt_symbol(sym)
     return (
         f"🔺 *ATR Trailing Stop 갱신*\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"심볼: `{update_result.symbol}`\n"
-        f"현재가: `{update_result.current_close:,.4f}`\n"
-        f"이전 Stop: `{update_result.prev_stop:,.4f}`\n"
-        f"신규 Stop: `{update_result.new_stop:,.4f}` (+{chg:.2f}%)\n"
+        f"심볼: `{sym_display}`\n"
+        f"현재가: `{fmt_price(sym, update_result.current_close)}`\n"
+        f"이전 Stop: `{fmt_price(sym, update_result.prev_stop)}`\n"
+        f"신규 Stop: `{fmt_price(sym, update_result.new_stop)}` (+{chg:.2f}%)\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"⚠️ 증권사 앱 지정가 갱신 필요!\n"
         f"시각: `{now}`"
@@ -205,23 +215,25 @@ def fmt_stop_update(update_result) -> str:
 
 def fmt_stop_held(symbol: str, current_stop: float, new_calc: float) -> str:
     """Stop 유지 알림 (선택적 — 일반적으로 침묵)."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now         = datetime.now().strftime("%Y-%m-%d %H:%M")
+    sym_display = fmt_symbol(symbol)
     return (
-        f"🔒 *ATR Stop 유지* `{symbol}`\n"
-        f"현재 Stop: `{current_stop:,.4f}` (유지)\n"
-        f"신규 계산값: `{new_calc:,.4f}` (하향 — 적용 안 함)\n"
+        f"🔒 *ATR Stop 유지* `{sym_display}`\n"
+        f"현재 Stop: `{fmt_price(symbol, current_stop)}` (유지)\n"
+        f"신규 계산값: `{fmt_price(symbol, new_calc)}` (하향 — 적용 안 함)\n"
         f"시각: `{now}`"
     )
 
 
 def fmt_breakeven_alert(symbol: str, entry_price: float) -> str:
     """1차 목표 달성 → Breakeven 전환 알림."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now         = datetime.now().strftime("%Y-%m-%d %H:%M")
+    sym_display = fmt_symbol(symbol)
     return (
         f"🎯 *Breakeven 전환 완료*\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"심볼: `{symbol}`\n"
-        f"Stop → 진입가 `{entry_price:,.4f}` 로 상향\n"
+        f"심볼: `{sym_display}`\n"
+        f"Stop → 진입가 `{fmt_price(symbol, entry_price)}` 로 상향\n"
         f"이제 리스크 없는 포지션입니다.\n"
         f"시각: `{now}`"
     )
@@ -229,13 +241,14 @@ def fmt_breakeven_alert(symbol: str, entry_price: float) -> str:
 
 def fmt_trigger_alert(symbol: str, triggers: list[str], close: float, stop: float | None) -> str:
     """즉각 대응 트리거 감지 긴급 알림."""
-    now   = datetime.now().strftime("%Y-%m-%d %H:%M")
-    tlist = "\n".join(f"  • {t}" for t in triggers)
-    stop_line = f"현재 Stop: `{stop:,.4f}`\n" if stop else ""
+    now         = datetime.now().strftime("%Y-%m-%d %H:%M")
+    sym_display = fmt_symbol(symbol)
+    tlist       = "\n".join(f"  • {t}" for t in triggers)
+    stop_line   = f"현재 Stop: `{fmt_price(symbol, stop)}`\n" if stop else ""
     return (
         f"🚨 *즉각 대응 트리거 감지*\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"심볼: `{symbol}`  현재가: `{close:,.4f}`\n"
+        f"심볼: `{sym_display}`  현재가: `{fmt_price(symbol, close)}`\n"
         f"{stop_line}"
         f"━━━━━━━━━━━━━━━━\n"
         f"{tlist}\n"
@@ -254,7 +267,7 @@ def fmt_chandelier_report(chandelier_results: list, stop_records: dict) -> str:
     chandelier_results : list[ChandelierResult]
     stop_records       : dict[symbol, StopRecord]  (stop_manager.load_all() 결과)
     """
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now           = datetime.now().strftime("%Y-%m-%d %H:%M")
     near_count    = sum(1 for r in chandelier_results if r.is_near_stop)
     updated_count = sum(1 for r in chandelier_results
                         if r.symbol in stop_records
@@ -270,17 +283,17 @@ def fmt_chandelier_report(chandelier_results: list, stop_records: dict) -> str:
     ]
 
     for r in sorted(chandelier_results, key=lambda x: x.dist_to_stop_pct):
-        rec        = stop_records.get(r.symbol)
-        reg_stop   = f"{rec.current_stop:,.2f}" if rec else "미등록"
-        near_flag  = " 🔴" if r.is_near_stop else ""
-        stage_flag = f" [BE]" if rec and rec.stage >= 1 else ""
+        rec         = stop_records.get(r.symbol)
+        sym_display = fmt_symbol(r.symbol)
+        reg_stop    = fmt_price(r.symbol, rec.current_stop) if rec else "미등록"
+        near_flag   = " 🔴" if r.is_near_stop else ""
+        stage_flag  = " [BE]" if rec and rec.stage >= 1 else ""
         lines.append(
-            f"`{r.symbol:<12}` {r.market}  "
-            f"x{r.multiple}  "
-            f"HH:`{r.highest_high:,.2f}`  "
-            f"Stop:`{r.stop_level:,.2f}`  "
-            f"등록:`{reg_stop}`  "
-            f"Dist:`{r.dist_to_stop_pct:.1f}%`"
+            f"`{sym_display}`\n"
+            f"  [{r.market}] x{r.multiple}  "
+            f"Stop: `{fmt_price(r.symbol, r.stop_level)}`  "
+            f"등록: `{reg_stop}`  "
+            f"거리: `{r.dist_to_stop_pct:.1f}%`"
             f"{stage_flag}{near_flag}"
         )
 

@@ -36,6 +36,7 @@ from config import (
     SCHEDULE_TIMES,
     ATR_PERIOD,
     ACCOUNT_SIZE,
+    fmt_symbol,
 )
 from data_collector import fetch_portfolio, fetch_ohlcv
 from atr_calculator import (
@@ -51,6 +52,8 @@ from stop_manager import (
     add_position,
     remove_position,
     summary_text as stop_summary_text,
+    should_send_trigger_alert,
+    mark_trigger_sent,
 )
 import telegram_bot as tg
 
@@ -101,10 +104,14 @@ def job_stop_check() -> None:
         trigger      = check_immediate_triggers(symbol, df, current_stop)
         if trigger.has_trigger:
             close = float(df["Close"].iloc[-1])
-            tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop))
-            chart = plot_atr_chart(symbol, df, registered_stop=current_stop, as_bytes=True)
-            tg.send_photo(chart, caption=f"긴급: {symbol} 트리거 감지")
-            logger.warning("트리거 감지: %s — %s", symbol, trigger.triggers)
+            if should_send_trigger_alert(symbol, trigger.triggers, close, current_stop):
+                tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop))
+                chart = plot_atr_chart(symbol, df, registered_stop=current_stop, as_bytes=True)
+                tg.send_photo(chart, caption=f"긴급: {fmt_symbol(symbol)} 트리거 감지")
+                mark_trigger_sent(symbol, trigger.triggers, close, current_stop)
+                logger.warning("트리거 감지 알림: %s — %s", symbol, trigger.triggers)
+            else:
+                logger.info("트리거 중복 스킵: %s (당일 동일 조건 발송됨)", symbol)
 
         # Stop 갱신 (등록된 포지션만)
         if rec is None:
@@ -174,6 +181,20 @@ def job_daily_report() -> None:
     if positions:
         tg.send_message(tg.fmt_position_report(positions))
 
+    # 5. 종목별 미니 차트 (개별 전송)
+    logger.info("종목별 미니 차트 전송 시작")
+    for symbol, df in ohlcv_map.items():
+        if df.empty:
+            continue
+        rec   = stop_recs.get(symbol)
+        chart = plot_atr_chart(
+            symbol, df,
+            registered_stop=rec.current_stop if rec else None,
+            as_bytes=True,
+        )
+        if chart:
+            tg.send_photo(chart, caption=fmt_symbol(symbol))
+
     logger.info("일일 리포트 완료")
 
 
@@ -191,11 +212,15 @@ def job_trigger_check() -> None:
         current_stop = rec.current_stop if rec else None
         trigger      = check_immediate_triggers(symbol, df, current_stop)
         if trigger.has_trigger:
-            found = True
             close = float(df["Close"].iloc[-1])
-            tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop))
-            chart = plot_atr_chart(symbol, df, registered_stop=current_stop, as_bytes=True)
-            tg.send_photo(chart, caption=f"긴급: {symbol}")
+            if should_send_trigger_alert(symbol, trigger.triggers, close, current_stop):
+                found = True
+                tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop))
+                chart = plot_atr_chart(symbol, df, registered_stop=current_stop, as_bytes=True)
+                tg.send_photo(chart, caption=f"긴급: {fmt_symbol(symbol)}")
+                mark_trigger_sent(symbol, trigger.triggers, close, current_stop)
+            else:
+                logger.info("트리거 중복 스킵: %s (당일 동일 조건 발송됨)", symbol)
 
     if not found:
         logger.info("트리거 없음")
