@@ -58,6 +58,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # ── 3.5 한글 폰트 설치 (차트 한글 렌더링) ─────────────
+      - name: Install Korean fonts
+        run: |
+          sudo apt-get install -y fonts-nanum
+          fc-cache -fv
+
       # ── 4. 실행할 작업 결정 ───────────────────────────────
       #   cron 시간에 따라 GHA_JOB 환경변수를 동적으로 설정
       #   - UTC 06:35 / 13:55 → daily_report

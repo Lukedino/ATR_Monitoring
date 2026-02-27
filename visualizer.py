@@ -24,9 +24,14 @@ from atr_calculator import calc_atr, calc_atr_pct, calc_chandelier_stop
 
 logger = logging.getLogger(__name__)
 
-# 한글 폰트 설정 (Windows)
+# 한글 폰트 설정 (사용 가능한 폰트 자동 감지 — Windows: Malgun Gothic, Linux: NanumGothic)
 try:
-    plt.rcParams["font.family"] = "Malgun Gothic"
+    import matplotlib.font_manager as _fm
+    _candidates = ["Malgun Gothic", "NanumGothic", "NanumBarunGothic", "AppleGothic", "UnDotum"]
+    _available  = {f.name for f in _fm.fontManager.ttflist}
+    _font       = next((f for f in _candidates if f in _available), None)
+    if _font:
+        plt.rcParams["font.family"] = _font
 except Exception:
     pass
 plt.rcParams["axes.unicode_minus"] = False
