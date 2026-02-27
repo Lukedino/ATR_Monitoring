@@ -175,7 +175,7 @@ def fmt_position_report(position_results) -> str:
         sym_display = fmt_symbol(r.symbol)
         lines += [
             "",
-            f"*{sym_display}* [{r.market}·x{r.multiple}]",
+            f"*{sym_display}* ({r.market}·x{r.multiple})",
             f"   현재가 {fmt_price(r.symbol, r.close_price)} | ATR% {r.atr_pct:.2f}%",
             f"   수량 {int(r.quantity)}주 | 포지션 {r.position_value:,.0f}원",
             f"   🛑 손절 {fmt_price(r.symbol, r.stop_loss_price)}",
@@ -287,10 +287,10 @@ def fmt_chandelier_report(chandelier_results: list, stop_records: dict) -> str:
         sym_display = fmt_symbol(r.symbol)
         reg_stop    = fmt_price(r.symbol, rec.current_stop) if rec else "미등록"
         near_flag   = "🔴" if r.is_near_stop else "🟢"
-        stage_flag  = " [BE]" if rec and rec.stage >= 1 else ""
+        stage_flag  = " (BE)" if rec and rec.stage >= 1 else ""
         lines.append("")
         lines.append(
-            f"{near_flag} *{sym_display}* [{r.market}·x{r.multiple}]{stage_flag}\n"
+            f"{near_flag} *{sym_display}* ({r.market}·x{r.multiple}){stage_flag}\n"
             f"   Stop {fmt_price(r.symbol, r.stop_level)} | 등록 {reg_stop} | 거리 {r.dist_to_stop_pct:.1f}%"
         )
 
