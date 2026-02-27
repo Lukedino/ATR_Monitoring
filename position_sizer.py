@@ -41,6 +41,7 @@ class PositionResult:
     target_1:        float  # 1차: ATR × 2
     target_2:        float  # 2차: ATR × 4
     target_3:        float  # 3차: ATR × 6
+    usd_krw:         float  = 1.0   # 적용된 USD/KRW 환율 (KR 종목 = 1.0)
     # 단계별 매도 수량 (33% / 33% / 잔여)
     sell_1:          int    = field(default=0)
     sell_2:          int    = field(default=0)
@@ -71,6 +72,12 @@ class PositionResult:
         )
 
 
+def _is_krw_symbol(symbol: str) -> bool:
+    """KRW 기반 심볼 여부 (.KS/.KQ)."""
+    s = symbol.upper()
+    return s.endswith(".KS") or s.endswith(".KQ")
+
+
 def calc_position_size(
     symbol: str,
     close_price: float,
@@ -78,6 +85,7 @@ def calc_position_size(
     atr_pct: float | None = None,
     account_size: float   = ACCOUNT_SIZE,
     risk_per_trade: float = RISK_PER_TRADE,
+    usd_krw: float        = 1.0,
 ) -> PositionResult | None:
     """
     단일 자산에 대한 ATR 기반 포지션 크기를 계산합니다.
@@ -85,11 +93,12 @@ def calc_position_size(
     Parameters
     ----------
     symbol        : 종목 코드 (시장 분류 자동)
-    close_price   : 현재 종가 (진입가 기준)
-    atr           : 현재 ATR 절대값
+    close_price   : 현재 종가 (KR=원화, 해외=달러)
+    atr           : 현재 ATR 절대값 (종가와 같은 통화)
     atr_pct       : ATR% (None이면 atr/close_price 로 계산)
-    account_size  : 계좌 금액 (원)
+    account_size  : 계좌 금액 (원화)
     risk_per_trade: 트레이드당 허용 리스크 비율 (0.01 = 1%)
+    usd_krw       : USD/KRW 환율 (KR 종목은 1.0 그대로)
 
     Returns
     -------
@@ -103,27 +112,31 @@ def calc_position_size(
 
     from config import get_market_type
     market = get_market_type(symbol)
+    krw    = _is_krw_symbol(symbol)
+    fx     = 1.0 if krw else usd_krw   # 원화 환산 계수
 
-    dollar_risk    = account_size * risk_per_trade
-    stop_distance  = atr * multiple
-    quantity       = dollar_risk / stop_distance
-    position_value = quantity * close_price
+    dollar_risk       = account_size * risk_per_trade          # 원화 리스크 금액
+    stop_distance     = atr * multiple                         # 원통화 손절 거리
+    stop_distance_krw = stop_distance * fx                     # 원화 환산 손절 거리
+    quantity          = dollar_risk / stop_distance_krw        # 수량 (단위 수)
+    position_value    = quantity * close_price * fx            # 포지션 금액 (원화)
 
     return PositionResult(
-        symbol         = symbol,
-        market         = market,
-        close_price    = close_price,
-        atr            = atr,
-        atr_pct        = round(computed_pct, 2),
-        multiple       = multiple,
-        dollar_risk    = dollar_risk,
-        stop_distance  = stop_distance,
-        quantity       = quantity,
-        position_value = position_value,
+        symbol          = symbol,
+        market          = market,
+        close_price     = close_price,
+        atr             = atr,
+        atr_pct         = round(computed_pct, 2),
+        multiple        = multiple,
+        dollar_risk     = dollar_risk,
+        stop_distance   = stop_distance,
+        quantity        = quantity,
+        position_value  = position_value,
         stop_loss_price = close_price - stop_distance,
-        target_1       = close_price + atr * 2,
-        target_2       = close_price + atr * 4,
-        target_3       = close_price + atr * 6,
+        target_1        = close_price + atr * 2,
+        target_2        = close_price + atr * 4,
+        target_3        = close_price + atr * 6,
+        usd_krw         = 1.0 if krw else usd_krw,
     )
 
 
@@ -131,20 +144,23 @@ def calc_portfolio_positions(
     summary_df,
     account_size: float   = ACCOUNT_SIZE,
     risk_per_trade: float = RISK_PER_TRADE,
+    usd_krw: float        = 1.0,
 ) -> list[PositionResult]:
     """
     포트폴리오 전체 종목의 포지션 크기를 일괄 계산합니다.
     summary_df는 atr_calculator.summarize_portfolio_atr() 반환값.
+    usd_krw: 해외 종목 원화 환산에 사용할 USD/KRW 환율
     """
     results: list[PositionResult] = []
     for _, row in summary_df.iterrows():
         result = calc_position_size(
-            symbol        = row["Symbol"],
-            close_price   = row["Close"],
-            atr           = row["ATR"],
-            atr_pct       = row.get("ATR%"),
-            account_size  = account_size,
-            risk_per_trade= risk_per_trade,
+            symbol         = row["Symbol"],
+            close_price    = row["Close"],
+            atr            = row["ATR"],
+            atr_pct        = row.get("ATR%"),
+            account_size   = account_size,
+            risk_per_trade = risk_per_trade,
+            usd_krw        = usd_krw,
         )
         if result:
             results.append(result)

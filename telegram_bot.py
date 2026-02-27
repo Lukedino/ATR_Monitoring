@@ -183,15 +183,18 @@ def fmt_daily_report(summary_df, account_size: float) -> str:
     return "\n".join(lines)
 
 
-def fmt_position_report(position_results) -> str:
+def fmt_position_report(position_results, usd_krw: float = 1.0) -> str:
     """포지션 사이징 결과 메시지 생성."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now         = datetime.now().strftime("%Y-%m-%d %H:%M")
+    has_foreign = any(r.usd_krw > 1.0 for r in position_results)
     lines = [
         f"💰 *ATR 기반 포지션 사이징*",
         f"━━━━━━━━━━━━━━━━",
         f"📅 {now}",
-        f"━━━━━━━━━━━━━━━━",
     ]
+    if has_foreign:
+        lines.append(f"💱 USD/KRW {usd_krw:,.0f}원 (포지션 금액 원화 환산)")
+    lines.append(f"━━━━━━━━━━━━━━━━")
     for r in sorted(position_results, key=lambda x: x.atr_pct, reverse=True):
         sym_display = fmt_symbol(r.symbol)
         lines += [
@@ -306,13 +309,15 @@ def fmt_chandelier_report(chandelier_results: list, stop_records: dict) -> str:
     for r in sorted(chandelier_results, key=lambda x: x.dist_to_stop_pct):
         rec         = stop_records.get(r.symbol)
         sym_display = fmt_symbol(r.symbol)
-        reg_stop    = fmt_price(r.symbol, rec.current_stop) if rec else "미등록"
         near_flag   = "🔴" if r.is_near_stop else "🟢"
         stage_flag  = " (BE)" if rec and rec.stage >= 1 else ""
-        lines.append("")
-        lines.append(
+        line = (
             f"{near_flag} *{sym_display}* ({r.market}·x{r.multiple}){stage_flag}\n"
-            f"   Stop {fmt_price(r.symbol, r.stop_level)} | 등록 {reg_stop} | 거리 {r.dist_to_stop_pct:.1f}%"
+            f"   현재가 {fmt_price(r.symbol, r.current_close)} | Stop {fmt_price(r.symbol, r.stop_level)} | Gap {r.dist_to_stop_pct:.1f}%"
         )
+        if rec:
+            line += f"\n   등록 Stop {fmt_price(r.symbol, rec.current_stop)}"
+        lines.append("")
+        lines.append(line)
 
     return "\n".join(lines)

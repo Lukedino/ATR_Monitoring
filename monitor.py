@@ -38,7 +38,7 @@ from config import (
     ACCOUNT_SIZE,
     fmt_symbol,
 )
-from data_collector import fetch_portfolio, fetch_ohlcv
+from data_collector import fetch_portfolio, fetch_ohlcv, fetch_usd_krw
 from atr_calculator import (
     summarize_portfolio_atr,
     calc_chandelier_stop,
@@ -176,10 +176,11 @@ def job_daily_report() -> None:
     if chandelier_list:
         tg.send_message(tg.fmt_chandelier_report(chandelier_list, stop_recs))
 
-    # 4. 포지션 사이징
-    positions = calc_portfolio_positions(summary, ACCOUNT_SIZE)
+    # 4. 포지션 사이징 (환율 조회 후 해외 종목 원화 환산)
+    usd_krw   = fetch_usd_krw()
+    positions = calc_portfolio_positions(summary, ACCOUNT_SIZE, usd_krw=usd_krw)
     if positions:
-        tg.send_message(tg.fmt_position_report(positions))
+        tg.send_message(tg.fmt_position_report(positions, usd_krw=usd_krw))
 
     # 5. 종목별 미니 차트 (개별 전송)
     logger.info("종목별 미니 차트 전송 시작")

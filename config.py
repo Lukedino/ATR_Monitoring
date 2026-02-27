@@ -157,11 +157,17 @@ def fmt_symbol(symbol: str) -> str:
     종목 표시명 반환.
 
     KR 등록 종목: 삼성전자 | 005930.KS
+    KR 미등록   : 200710 (KS)   ← .KS suffix 분리
     그 외        : 그대로  (AAPL, BTC-USD, SPY 등)
     """
     name = KR_STOCK_NAMES.get(symbol)
     if name:
         return f"{name} | {symbol}"
+    sym_upper = symbol.upper()
+    if sym_upper.endswith(".KS"):
+        return f"{symbol[:-3]} (KS)"
+    if sym_upper.endswith(".KQ"):
+        return f"{symbol[:-3]} (KQ)"
     return symbol
 
 

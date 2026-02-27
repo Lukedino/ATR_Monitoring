@@ -95,3 +95,23 @@ def get_latest_price(symbol: str) -> float | None:
     if df.empty:
         return None
     return float(df["Close"].iloc[-1])
+
+
+def fetch_usd_krw() -> float:
+    """
+    USD/KRW 현재 환율을 조회합니다 (yfinance USDKRW=X).
+
+    Returns
+    -------
+    환율 (float) — 조회 실패 시 기본값 1,350 반환
+    """
+    try:
+        df = fetch_ohlcv("USDKRW=X", lookback_days=5)
+        if not df.empty:
+            rate = float(df["Close"].iloc[-1])
+            logger.info("USD/KRW 환율: %.0f", rate)
+            return rate
+    except Exception as exc:
+        logger.error("환율 조회 실패: %s", exc)
+    logger.warning("환율 조회 실패 — 기본값 1,350 사용")
+    return 1350.0
