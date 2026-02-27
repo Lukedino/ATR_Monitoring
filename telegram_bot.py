@@ -72,6 +72,27 @@ def send_message(text: str, parse_mode: str = "Markdown") -> bool:
         resp.raise_for_status()
         logger.info("텔레그램 메시지 전송 성공")
         return True
+    except requests.exceptions.HTTPError as exc:
+        # 400 = Markdown 파싱 오류 → plain text로 재시도
+        if exc.response is not None and exc.response.status_code == 400 and parse_mode:
+            logger.warning(
+                "Markdown 파싱 실패 (400) — plain text 재시도\n원문 앞 200자: %.200s", text
+            )
+            plain = text.replace("*", "").replace("_", "").replace("`", "")
+            try:
+                resp2 = requests.post(
+                    _url("sendMessage"),
+                    json={"chat_id": TELEGRAM_CHAT_ID, "text": plain},
+                    timeout=TIMEOUT_SEC,
+                )
+                resp2.raise_for_status()
+                logger.info("텔레그램 메시지 전송 성공 (plain text 폴백)")
+                return True
+            except requests.RequestException as exc2:
+                logger.error("텔레그램 메시지 전송 실패 (폴백): %s", exc2)
+                return False
+        logger.error("텔레그램 메시지 전송 실패: %s", exc)
+        return False
     except requests.RequestException as exc:
         logger.error("텔레그램 메시지 전송 실패: %s", exc)
         return False
