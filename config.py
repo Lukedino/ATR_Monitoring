@@ -37,6 +37,9 @@ _PORTFOLIO_FALLBACK: dict[str, list[str]] = {
 # Drive에서 읽어온 종목명 (KR_STOCK_NAMES 정의 후 병합)
 _kr_names_from_drive: dict[str, str] = {}
 
+# Drive에서 읽어온 계좌 매핑 (symbol → 계좌명 리스트)
+_symbol_accounts: dict[str, list[str]] = {}
+
 # 구분 컬럼 → yfinance 심볼 suffix 매핑
 _CATEGORY_SUFFIX: dict[str, str] = {
     "한국":   ".KS",
@@ -50,24 +53,29 @@ _CATEGORY_SUFFIX: dict[str, str] = {
 def _parse_portfolio_df(df) -> dict[str, list[str]]:
     """
     Excel 복사 형식 DataFrame → PORTFOLIO dict.
-    컬럼: 계좌, 구분, 종목, Ticker  (탭/쉼표 구분 자동 감지)
-    종목 컬럼의 한글명은 _kr_names_from_drive에 수집 → KR_STOCK_NAMES에 나중에 병합.
+    컬럼: 계좌, 구분, 종목(종목코드), 거래일, 진입가격
+    - 종목 컬럼 = 종목코드 (예: 005930 / AAPL / BTC)
+    - 구분 컬럼으로 yfinance suffix 자동 결정
+    - 계좌 컬럼 → _symbol_accounts 에 수집
     """
-    global _kr_names_from_drive
+    global _kr_names_from_drive, _symbol_accounts
     df.columns = [str(c).strip() for c in df.columns]
     symbols: list[str] = []
     for _, row in df.iterrows():
         category = str(row.get("구분", "")).strip()
-        ticker   = str(row.get("Ticker", "")).strip()
-        name     = str(row.get("종목", "")).strip()
+        ticker   = str(row.get("종목", "")).strip()   # 종목 컬럼 = 종목코드
+        account  = str(row.get("계좌", "")).strip()
         if not ticker or ticker == "nan":
             continue
         suffix = _CATEGORY_SUFFIX.get(category, "")
         symbol = ticker + suffix
         if symbol not in symbols:          # 중복 제거 (순서 유지)
             symbols.append(symbol)
-        if name and name != "nan":
-            _kr_names_from_drive[symbol] = name
+        # 계좌 매핑 수집 (같은 종목이 여러 계좌에 있으면 모두 기록)
+        if account and account != "nan":
+            acct_list = _symbol_accounts.setdefault(symbol, [])
+            if account not in acct_list:
+                acct_list.append(account)
     return {"포트폴리오": symbols}
 
 
@@ -140,6 +148,9 @@ else:
 
 # 모든 심볼을 플랫 리스트로
 ALL_SYMBOLS: list[str] = list(dict.fromkeys(s for symbols in PORTFOLIO.values() for s in symbols))
+
+# 심볼 → 계좌명 리스트 (알람 메시지에서 "대상: 계좌A, 계좌B" 표시용)
+SYMBOL_ACCOUNTS: dict[str, list[str]] = _symbol_accounts
 
 # ─────────────────────────────────────────────────────────────
 # ATR 파라미터

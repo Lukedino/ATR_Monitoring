@@ -21,6 +21,7 @@ from config import (
     TELEGRAM_CHAT_ID,
     fmt_price,
     fmt_symbol,
+    SYMBOL_ACCOUNTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,18 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.telegram.org/bot{token}/{method}"
 
 TIMEOUT_SEC = 20
+
+
+def _account_line(symbol: str) -> str:
+    """알람용 계좌 한 줄 반환. 계좌 미등록 종목은 빈 문자열."""
+    accounts = SYMBOL_ACCOUNTS.get(symbol, [])
+    return f"대상: {', '.join(accounts)}\n" if accounts else ""
+
+
+def _account_tag(symbol: str) -> str:
+    """인라인 계좌 태그 반환. 예: ' [ISA계좌, 연금저축]'"""
+    accounts = SYMBOL_ACCOUNTS.get(symbol, [])
+    return f" [{', '.join(accounts)}]" if accounts else ""
 
 
 def _url(method: str) -> str:
@@ -150,6 +163,7 @@ def fmt_spike_alert(symbol: str, atr: float, atr_avg: float, atr_pct: float) -> 
         f"⚠️ *ATR 스파이크 알림*\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"*{sym_display}*\n"
+        f"{_account_line(symbol)}"
         f"ATR {fmt_price(symbol, atr)} | 평균 {fmt_price(symbol, atr_avg)} | 배율 {ratio:.2f}x | ATR% {atr_pct:.2f}%\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"📅 {now}"
@@ -177,7 +191,7 @@ def fmt_daily_report(summary_df) -> str:
         atr_str     = fmt_price(sym, row["ATR"])
         lines.append("")
         lines.append(
-            f"{spike_mark} *{sym_display}*\n"
+            f"{spike_mark} *{sym_display}*{_account_tag(sym)}\n"
             f"   종가 {price_str} | ATR {atr_str} | ATR% {row['ATR%']:.2f}%"
         )
 
@@ -198,6 +212,7 @@ def fmt_stop_update(update_result) -> str:
         f"🔺 *ATR Trailing Stop 갱신*\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"*{sym_display}*\n"
+        f"{_account_line(sym)}"
         f"현재가 {fmt_price(sym, update_result.current_close)}\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"{fmt_price(sym, update_result.prev_stop)}  →  {fmt_price(sym, update_result.new_stop)}  (+{chg:.2f}% ↑)\n"
@@ -248,6 +263,7 @@ def fmt_trigger_alert(symbol: str, triggers: list[str], close: float, stop: floa
         f"🚨 *즉각 대응 트리거 감지*\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"*{sym_display}*\n"
+        f"{_account_line(symbol)}"
         f"{stop_line}"
         f"━━━━━━━━━━━━━━━━\n"
         f"{tlist}\n"
@@ -280,7 +296,7 @@ def fmt_chandelier_report(chandelier_results: list) -> str:
         sym_display = fmt_symbol(r.symbol)
         near_flag   = "🔴" if r.is_near_stop else "🟢"
         line = (
-            f"{near_flag} *{sym_display}* ({r.market}·x{r.multiple})\n"
+            f"{near_flag} *{sym_display}*{_account_tag(r.symbol)} ({r.market}·x{r.multiple})\n"
             f"   현재가 {fmt_price(r.symbol, r.current_close)} | Stop {fmt_price(r.symbol, r.stop_level)} | Gap {r.dist_to_stop_pct:.1f}% | ATR% {r.atr_pct:.2f}%"
         )
         lines.append("")
