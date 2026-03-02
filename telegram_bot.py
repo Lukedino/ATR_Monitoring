@@ -174,10 +174,11 @@ def fmt_daily_report(summary_df) -> str:
         spike_mark  = "🔴" if row.get("Spike", False) else "🟢"
         sym_display = fmt_symbol(sym)
         price_str   = fmt_price(sym, row["Close"])
+        atr_str     = fmt_price(sym, row["ATR"])
         lines.append("")
         lines.append(
             f"{spike_mark} *{sym_display}*\n"
-            f"   종가 {price_str} | ATR% {row['ATR%']:.2f}%"
+            f"   종가 {price_str} | ATR {atr_str} | ATR% {row['ATR%']:.2f}%"
         )
 
     return "\n".join(lines)
@@ -280,7 +281,7 @@ def fmt_chandelier_report(chandelier_results: list) -> str:
         near_flag   = "🔴" if r.is_near_stop else "🟢"
         line = (
             f"{near_flag} *{sym_display}* ({r.market}·x{r.multiple})\n"
-            f"   현재가 {fmt_price(r.symbol, r.current_close)} | Stop {fmt_price(r.symbol, r.stop_level)} | Gap {r.dist_to_stop_pct:.1f}%"
+            f"   현재가 {fmt_price(r.symbol, r.current_close)} | Stop {fmt_price(r.symbol, r.stop_level)} | Gap {r.dist_to_stop_pct:.1f}% | ATR% {r.atr_pct:.2f}%"
         )
         lines.append("")
         lines.append(line)

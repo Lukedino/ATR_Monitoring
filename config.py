@@ -64,7 +64,8 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
             continue
         suffix = _CATEGORY_SUFFIX.get(category, "")
         symbol = ticker + suffix
-        symbols.append(symbol)
+        if symbol not in symbols:          # 중복 제거 (순서 유지)
+            symbols.append(symbol)
         if name and name != "nan":
             _kr_names_from_drive[symbol] = name
     return {"포트폴리오": symbols}
@@ -138,7 +139,7 @@ else:
     PORTFOLIO = _PORTFOLIO_FALLBACK
 
 # 모든 심볼을 플랫 리스트로
-ALL_SYMBOLS: list[str] = [s for symbols in PORTFOLIO.values() for s in symbols]
+ALL_SYMBOLS: list[str] = list(dict.fromkeys(s for symbols in PORTFOLIO.values() for s in symbols))
 
 # ─────────────────────────────────────────────────────────────
 # ATR 파라미터
