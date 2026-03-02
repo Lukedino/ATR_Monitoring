@@ -35,16 +35,14 @@ from config import (
     ALL_SYMBOLS,
     SCHEDULE_TIMES,
     ATR_PERIOD,
-    ACCOUNT_SIZE,
     fmt_symbol,
 )
-from data_collector import fetch_portfolio, fetch_ohlcv, fetch_usd_krw
+from data_collector import fetch_portfolio, fetch_ohlcv
 from atr_calculator import (
     summarize_portfolio_atr,
     calc_chandelier_stop,
     check_immediate_triggers,
 )
-from position_sizer import calc_portfolio_positions
 from visualizer import plot_portfolio_atr_bar, plot_atr_chart
 from stop_manager import (
     load_all as load_stops,
@@ -143,10 +141,10 @@ def job_daily_report() -> None:
     """
     [장마감 후] 포트폴리오 전체 ATR 현황 리포트.
 
-      1. 전체 ATR 요약 (Chandelier Stop 포함)
+      1. 전체 ATR 요약
       2. ATR% 비교 바차트
       3. Chandelier Stop 현황
-      4. 포지션 사이징 요약
+      4. 종목별 미니 차트
     """
     logger.info("일일 리포트 시작")
     ohlcv_map = fetch_portfolio(ALL_SYMBOLS)
@@ -160,7 +158,7 @@ def job_daily_report() -> None:
         return
 
     # 1. ATR 요약 텍스트
-    tg.send_message(tg.fmt_daily_report(summary, ACCOUNT_SIZE))
+    tg.send_message(tg.fmt_daily_report(summary))
 
     # 2. 포트폴리오 바차트
     bar_chart = plot_portfolio_atr_bar(summary, as_bytes=True)
@@ -174,15 +172,9 @@ def job_daily_report() -> None:
         if ch:
             chandelier_list.append(ch)
     if chandelier_list:
-        tg.send_message(tg.fmt_chandelier_report(chandelier_list, stop_recs))
+        tg.send_message(tg.fmt_chandelier_report(chandelier_list))
 
-    # 4. 포지션 사이징 (환율 조회 후 해외 종목 원화 환산)
-    usd_krw   = fetch_usd_krw()
-    positions = calc_portfolio_positions(summary, ACCOUNT_SIZE, usd_krw=usd_krw)
-    if positions:
-        tg.send_message(tg.fmt_position_report(positions, usd_krw=usd_krw))
-
-    # 5. 종목별 미니 차트 (개별 전송)
+    # 4. 종목별 미니 차트 (개별 전송)
     logger.info("종목별 미니 차트 전송 시작")
     for symbol, df in ohlcv_map.items():
         if df.empty:

@@ -91,12 +91,17 @@ jobs:
           # 텔레그램
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ── 포트폴리오 (Google Drive, 우선순위 1) ─────────────
+          # Google Cloud Service Account JSON 키 전체 내용
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          # Drive 파일 ID (URL의 /d/{FILE_ID}/ 부분)
+          GDRIVE_PORTFOLIO_FILE_ID:    ${{ secrets.GDRIVE_PORTFOLIO_FILE_ID }}
+          # ── 포트폴리오 (STOCK_LIST, 레거시 fallback) ──────────
+          # Drive 미설정 시 사용. 형식: {"국내주식":["005930.KS"],...}
+          STOCK_LIST:         ${{ secrets.STOCK_LIST }}
           # 계좌 설정
           ACCOUNT_SIZE:       ${{ secrets.ACCOUNT_SIZE }}
           RISK_PER_TRADE:     ${{ secrets.RISK_PER_TRADE }}
-          # 포트폴리오 종목 목록 (JSON 문자열, GitHub Secret으로 관리)
-          # 형식: {"국내주식":["005930.KS"],"해외주식":["AAPL","NVDA"],"암호화폐":["BTC-USD"],"ETF":["SPY"]}
-          STOCK_LIST:         ${{ secrets.STOCK_LIST }}
           # GitHub Actions 플래그
           GITHUB_ACTIONS:     'true'
         run: python monitor.py

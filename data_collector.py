@@ -97,6 +97,28 @@ def get_latest_price(symbol: str) -> float | None:
     return float(df["Close"].iloc[-1])
 
 
+def enrich_kr_stock_names(symbols: list[str]) -> None:
+    """
+    KR_STOCK_NAMES에 없는 KR 종목을 yfinance로 조회하여 한글명을 추가합니다.
+    앱 시작 시 한 번 호출하세요.
+    """
+    from config import KR_STOCK_NAMES
+    for symbol in symbols:
+        sym_upper = symbol.upper()
+        if not (sym_upper.endswith(".KS") or sym_upper.endswith(".KQ")):
+            continue
+        if symbol in KR_STOCK_NAMES:
+            continue
+        try:
+            info = yf.Ticker(symbol).info
+            name = info.get("longName") or info.get("shortName")
+            if name:
+                KR_STOCK_NAMES[symbol] = name
+                logger.info("종목명 조회: %s → %s", symbol, name)
+        except Exception as exc:
+            logger.debug("종목명 조회 실패 (%s): %s", symbol, exc)
+
+
 def fetch_usd_krw() -> float:
     """
     USD/KRW 현재 환율을 조회합니다 (yfinance USDKRW=X).

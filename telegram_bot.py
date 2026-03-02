@@ -156,7 +156,7 @@ def fmt_spike_alert(symbol: str, atr: float, atr_avg: float, atr_pct: float) -> 
     )
 
 
-def fmt_daily_report(summary_df, account_size: float) -> str:
+def fmt_daily_report(summary_df) -> str:
     """일별 포트폴리오 ATR 현황 리포트 메시지 생성."""
     now         = datetime.now().strftime("%Y-%m-%d %H:%M")
     spike_count = int(summary_df["Spike"].sum()) if "Spike" in summary_df.columns else 0
@@ -165,7 +165,7 @@ def fmt_daily_report(summary_df, account_size: float) -> str:
         f"📈 *포트폴리오 ATR 일일 리포트*",
         f"━━━━━━━━━━━━━━━━",
         f"📅 {now}",
-        f"💼 계좌 {account_size:,.0f}원 | 종목 {len(summary_df)}개 | 스파이크 {spike_count}개",
+        f"종목 {len(summary_df)}개 | 스파이크 {spike_count}개",
         f"━━━━━━━━━━━━━━━━",
     ]
 
@@ -180,33 +180,6 @@ def fmt_daily_report(summary_df, account_size: float) -> str:
             f"   종가 {price_str} | ATR% {row['ATR%']:.2f}%"
         )
 
-    return "\n".join(lines)
-
-
-def fmt_position_report(position_results, usd_krw: float = 1.0) -> str:
-    """포지션 사이징 결과 메시지 생성."""
-    now         = datetime.now().strftime("%Y-%m-%d %H:%M")
-    has_foreign = any(r.usd_krw > 1.0 for r in position_results)
-    lines = [
-        f"💰 *ATR 기반 포지션 사이징*",
-        f"━━━━━━━━━━━━━━━━",
-        f"📅 {now}",
-    ]
-    if has_foreign:
-        lines.append(f"💱 USD/KRW {usd_krw:,.0f}원 (포지션 금액 원화 환산)")
-    lines.append(f"━━━━━━━━━━━━━━━━")
-    for r in sorted(position_results, key=lambda x: x.atr_pct, reverse=True):
-        sym_display = fmt_symbol(r.symbol)
-        lines += [
-            "",
-            f"*{sym_display}* ({r.market}·x{r.multiple})",
-            f"   현재가 {fmt_price(r.symbol, r.close_price)} | ATR% {r.atr_pct:.2f}%",
-            f"   수량 {int(r.quantity)}주 | 포지션 {r.position_value:,.0f}원",
-            f"   🛑 손절 {fmt_price(r.symbol, r.stop_loss_price)}",
-            f"   📍 1차 {fmt_price(r.symbol, r.target_1)} → {r.sell_1}주",
-            f"   📍 2차 {fmt_price(r.symbol, r.target_2)} → {r.sell_2}주",
-            f"   📍 3차 {fmt_price(r.symbol, r.target_3)} → {r.sell_3}주",
-        ]
     return "\n".join(lines)
 
 
@@ -283,40 +256,32 @@ def fmt_trigger_alert(symbol: str, triggers: list[str], close: float, stop: floa
     )
 
 
-def fmt_chandelier_report(chandelier_results: list, stop_records: dict) -> str:
+def fmt_chandelier_report(chandelier_results: list) -> str:
     """
     전체 포트폴리오 Chandelier Exit 현황 리포트.
 
     Parameters
     ----------
     chandelier_results : list[ChandelierResult]
-    stop_records       : dict[symbol, StopRecord]  (stop_manager.load_all() 결과)
     """
-    now           = datetime.now().strftime("%Y-%m-%d %H:%M")
-    near_count    = sum(1 for r in chandelier_results if r.is_near_stop)
-    updated_count = sum(1 for r in chandelier_results
-                        if r.symbol in stop_records
-                        and r.stop_level > stop_records[r.symbol].current_stop)
+    now        = datetime.now().strftime("%Y-%m-%d %H:%M")
+    near_count = sum(1 for r in chandelier_results if r.is_near_stop)
 
     lines = [
         f"📊 *ATR Trailing Stop 현황*",
         f"━━━━━━━━━━━━━━━━",
         f"📅 {now}",
-        f"모니터링 {len(chandelier_results)}종목 | Stop근접 {near_count}개 | 갱신대기 {updated_count}개",
+        f"모니터링 {len(chandelier_results)}종목 | Stop근접 {near_count}개",
         f"━━━━━━━━━━━━━━━━",
     ]
 
     for r in sorted(chandelier_results, key=lambda x: x.dist_to_stop_pct):
-        rec         = stop_records.get(r.symbol)
         sym_display = fmt_symbol(r.symbol)
         near_flag   = "🔴" if r.is_near_stop else "🟢"
-        stage_flag  = " (BE)" if rec and rec.stage >= 1 else ""
         line = (
-            f"{near_flag} *{sym_display}* ({r.market}·x{r.multiple}){stage_flag}\n"
+            f"{near_flag} *{sym_display}* ({r.market}·x{r.multiple})\n"
             f"   현재가 {fmt_price(r.symbol, r.current_close)} | Stop {fmt_price(r.symbol, r.stop_level)} | Gap {r.dist_to_stop_pct:.1f}%"
         )
-        if rec:
-            line += f"\n   등록 Stop {fmt_price(r.symbol, rec.current_stop)}"
         lines.append("")
         lines.append(line)
 
