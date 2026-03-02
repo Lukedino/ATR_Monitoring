@@ -18,38 +18,116 @@ TELEGRAM_CHAT_ID: str   = os.getenv("TELEGRAM_CHAT_ID", "")
 # 포트폴리오 구성
 #
 # 우선순위:
-#   1) GitHub Secret 'STOCK_LIST' 환경변수 (JSON 문자열)
-#      예) {"국내주식":["005930.KS"],"해외주식":["AAPL","NVDA"]}
-#   2) 로컬 개발용 fallback (아래 하드코딩 값)
-#
-# yfinance 심볼 기준
-#   국내주식: 종목코드.KS (KOSPI) 또는 .KQ (KOSDAQ)
-#   해외주식: 그대로 (AAPL, MSFT …)
-#   암호화폐: BTC-USD, ETH-USD …
-#   ETF: SPY, QQQ, 069500.KS …
+#   1) Google Drive (Service Account)
+#      환경변수: GOOGLE_SERVICE_ACCOUNT_JSON + GDRIVE_PORTFOLIO_FILE_ID
+#      파일 형식: Excel 복사 CSV (계좌, 구분, 종목, Ticker)
+#      구분값: 한국 / 코스닥 / 미국 / 크립토 / ETF
+#   2) GitHub Secret 'STOCK_LIST' 환경변수 (JSON 문자열, 레거시)
+#   3) 로컬 개발용 fallback
 # ─────────────────────────────────────────────────────────────
 
 # 로컬 개발용 fallback (테스트 종목만 소수 유지)
 _PORTFOLIO_FALLBACK: dict[str, list[str]] = {
-    "국내주식": [
-        "005930.KS",   # 삼성전자
-    ],
-    "해외주식": [
-        "AAPL",        # Apple
-        "NVDA",        # NVIDIA
-    ],
-    "암호화폐": [
-        "BTC-USD",
-    ],
-    "ETF": [
-        "SPY",         # S&P 500
-    ],
+    "국내주식": ["005930.KS"],   # 삼성전자
+    "해외주식": ["AAPL", "NVDA"],
+    "암호화폐": ["BTC-USD"],
+    "ETF":      ["SPY"],
 }
 
-_stock_list_env = os.getenv("STOCK_LIST", "")
-if _stock_list_env:
+# Drive에서 읽어온 종목명 (KR_STOCK_NAMES 정의 후 병합)
+_kr_names_from_drive: dict[str, str] = {}
+
+# 구분 컬럼 → yfinance 심볼 suffix 매핑
+_CATEGORY_SUFFIX: dict[str, str] = {
+    "한국":   ".KS",
+    "코스닥": ".KQ",
+    "미국":   "",
+    "크립토": "-USD",
+    "ETF":    "",
+}
+
+
+def _parse_portfolio_df(df) -> dict[str, list[str]]:
+    """
+    Excel 복사 형식 DataFrame → PORTFOLIO dict.
+    컬럼: 계좌, 구분, 종목, Ticker  (탭/쉼표 구분 자동 감지)
+    종목 컬럼의 한글명은 _kr_names_from_drive에 수집 → KR_STOCK_NAMES에 나중에 병합.
+    """
+    global _kr_names_from_drive
+    df.columns = [str(c).strip() for c in df.columns]
+    symbols: list[str] = []
+    for _, row in df.iterrows():
+        category = str(row.get("구분", "")).strip()
+        ticker   = str(row.get("Ticker", "")).strip()
+        name     = str(row.get("종목", "")).strip()
+        if not ticker or ticker == "nan":
+            continue
+        suffix = _CATEGORY_SUFFIX.get(category, "")
+        symbol = ticker + suffix
+        symbols.append(symbol)
+        if name and name != "nan":
+            _kr_names_from_drive[symbol] = name
+    return {"포트폴리오": symbols}
+
+
+def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
+    """
+    Google Drive에서 포트폴리오 파일을 다운로드하여 파싱합니다.
+    Google Sheets / 업로드된 .xlsx / CSV 파일 모두 지원.
+    """
+    sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    file_id = os.getenv("GDRIVE_PORTFOLIO_FILE_ID", "")
+    if not sa_json or not file_id:
+        return None
     try:
-        PORTFOLIO: dict[str, list[str]] = json.loads(_stock_list_env)
+        import io
+        import pandas as pd
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+
+        creds   = service_account.Credentials.from_service_account_info(
+            json.loads(sa_json),
+            scopes=["https://www.googleapis.com/auth/drive.readonly"],
+        )
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+        meta = service.files().get(fileId=file_id, fields="mimeType").execute()
+        mime = meta["mimeType"]
+
+        if mime == "application/vnd.google-apps.spreadsheet":
+            # Google Sheets → CSV export
+            raw = service.files().export(fileId=file_id, mimeType="text/csv").execute()
+            df  = pd.read_csv(io.StringIO(raw.decode("utf-8")), sep=None, engine="python")
+        elif mime in (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+        ):
+            # 업로드된 Excel (.xlsx / .xls) → 이진 파일로 읽기
+            raw = service.files().get_media(fileId=file_id).execute()
+            df  = pd.read_excel(io.BytesIO(raw))
+        else:
+            # CSV 또는 텍스트 파일
+            raw = service.files().get_media(fileId=file_id).execute()
+            df  = pd.read_csv(io.StringIO(raw.decode("utf-8")), sep=None, engine="python")
+
+        import logging as _log
+        _log.getLogger("config").info("Drive 포트폴리오 로드 성공: %d종목 (mime=%s)", len(df), mime)
+        return _parse_portfolio_df(df)
+
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger("config").warning("Drive 포트폴리오 로드 실패: %s — fallback 사용", exc)
+        return None
+
+
+_stock_list_env  = os.getenv("STOCK_LIST", "")
+_drive_portfolio = _load_portfolio_from_drive()
+
+if _drive_portfolio:
+    PORTFOLIO: dict[str, list[str]] = _drive_portfolio
+elif _stock_list_env:
+    try:
+        PORTFOLIO = json.loads(_stock_list_env)
     except json.JSONDecodeError:
         import logging as _logging
         _logging.getLogger("config").warning(
@@ -137,6 +215,8 @@ KR_STOCK_NAMES: dict[str, str] = {
     "114800.KS": "KODEX 인버스",
     "252670.KS": "KODEX 200선물인버스2X",
 }
+# Drive에서 읽어온 종목명 병합 (Excel 종목 컬럼 → 한글명 직접 등록)
+KR_STOCK_NAMES.update(_kr_names_from_drive)
 
 
 def fmt_price(symbol: str, price: float) -> str:
