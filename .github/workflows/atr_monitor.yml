@@ -77,9 +77,11 @@ jobs:
           # 수동 실행 시 입력값 우선
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "GHA_JOB=${{ inputs.job }}" >> $GITHUB_ENV
-          elif [ "$HOUR" = "06" ] && [ "$MINUTE" = "35" ]; then
+          elif [ "$HOUR" = "06" ] && [ "$MINUTE" -ge 30 ]; then
+            # KST 15:35 daily_report — GHA 지연(최대 30분) 허용: UTC 06:30~06:59
             echo "GHA_JOB=daily_report" >> $GITHUB_ENV
-          elif [ "$HOUR" = "13" ] && [ "$MINUTE" = "55" ]; then
+          elif [ "$HOUR" = "13" ]; then
+            # KST 22:55 daily_report — UTC 13시대 전체 (stop_check 미스케줄 없음)
             echo "GHA_JOB=daily_report" >> $GITHUB_ENV
           else
             echo "GHA_JOB=stop_check" >> $GITHUB_ENV
