@@ -53,24 +53,38 @@ _CATEGORY_SUFFIX: dict[str, str] = {
 def _parse_portfolio_df(df) -> dict[str, list[str]]:
     """
     Excel 복사 형식 DataFrame → PORTFOLIO dict.
-    컬럼: 계좌, 구분, 종목(종목코드), 거래일, 진입가격
-    - 종목 컬럼 = 종목코드 (예: 005930 / AAPL / BTC)
+    컬럼: 계좌, 구분, 종목(종목명), Ticker(종목코드), 거래일, 진입가격
+    - Ticker 컬럼 우선 사용 (종목코드: 005930 / AAPL / BTC)
+    - Ticker 없으면 종목 컬럼 사용 (US/크립토는 종목명 = ticker 코드)
     - 구분 컬럼으로 yfinance suffix 자동 결정
     - 계좌 컬럼 → _symbol_accounts 에 수집
+    - 종목명 → _kr_names_from_drive 에 수집 (Ticker 컬럼 사용 시)
     """
     global _kr_names_from_drive, _symbol_accounts
     df.columns = [str(c).strip() for c in df.columns]
     symbols: list[str] = []
     for _, row in df.iterrows():
         category = str(row.get("구분", "")).strip()
-        ticker   = str(row.get("종목", "")).strip()   # 종목 컬럼 = 종목코드
         account  = str(row.get("계좌", "")).strip()
+        name     = str(row.get("종목", "")).strip()   # 종목명 (표시용)
+
+        # Ticker 컬럼 우선 — 없으면 종목 컬럼을 코드로 사용
+        ticker_raw = str(row.get("Ticker", "")).strip()
+        ticker = ticker_raw if (ticker_raw and ticker_raw != "nan") else name
+
         if not ticker or ticker == "nan":
             continue
+
         suffix = _CATEGORY_SUFFIX.get(category, "")
         symbol = ticker + suffix
+
         if symbol not in symbols:          # 중복 제거 (순서 유지)
             symbols.append(symbol)
+
+        # 종목명 수집 (Ticker 컬럼이 있을 때만 — 이름 ≠ 코드)
+        if ticker_raw and ticker_raw != "nan" and name and name != "nan":
+            _kr_names_from_drive[symbol] = name
+
         # 계좌 매핑 수집 (같은 종목이 여러 계좌에 있으면 모두 기록)
         if account and account != "nan":
             acct_list = _symbol_accounts.setdefault(symbol, [])
