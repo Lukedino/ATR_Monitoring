@@ -197,7 +197,7 @@ def job_daily_report() -> None:
         )
         if chart:
             tg.send_photo(chart, caption=fmt_symbol(symbol))
-            time.sleep(2)   # Telegram rate limit 방지 (1msg/s 권장)
+            time.sleep(4)   # Telegram rate limit 방지 (분당 15장 ≈ 안전 한도)
 
     logger.info("일일 리포트 완료")
 

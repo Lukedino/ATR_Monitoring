@@ -131,34 +131,42 @@ def send_photo(image_bytes: bytes, caption: str = "") -> bool:
         logger.warning("이미지 데이터 없음 — 전송 건너뜀")
         return False
 
-    files_data = {"photo": ("chart.png", image_bytes, "image/png")}
-    payload    = {"chat_id": TELEGRAM_CHAT_ID}
+    payload = {"chat_id": TELEGRAM_CHAT_ID}
     if caption:
         payload["caption"] = caption[:1024]   # 텔레그램 캡션 최대 1024자
 
-    try:
-        resp = requests.post(
-            _url("sendPhoto"),
-            files=files_data,
-            data=payload,
-            timeout=TIMEOUT_SEC,
-        )
-        if resp.status_code == 429:
-            retry_after = resp.json().get("parameters", {}).get("retry_after", 30)
-            logger.warning("Rate limit — %d초 대기 후 재시도", retry_after)
-            time.sleep(retry_after)
+    for attempt in range(3):
+        try:
             resp = requests.post(
                 _url("sendPhoto"),
-                files=files_data,
+                files={"photo": ("chart.png", image_bytes, "image/png")},
                 data=payload,
                 timeout=TIMEOUT_SEC,
             )
-        resp.raise_for_status()
-        logger.info("텔레그램 이미지 전송 성공")
-        return True
-    except requests.RequestException as exc:
-        logger.error("텔레그램 이미지 전송 실패: %s", exc)
-        return False
+        except requests.RequestException as exc:
+            logger.error("텔레그램 이미지 전송 실패 (네트워크): %s", exc)
+            return False
+
+        if resp.status_code == 429:
+            # retry_after 파싱 후 최소 30초 대기 (Telegram 권장)
+            retry_after = max(
+                resp.json().get("parameters", {}).get("retry_after", 30),
+                30,
+            )
+            logger.warning("Rate limit (시도 %d/3) — %d초 대기", attempt + 1, retry_after)
+            time.sleep(retry_after)
+            continue   # 재시도
+
+        try:
+            resp.raise_for_status()
+            logger.info("텔레그램 이미지 전송 성공")
+            return True
+        except requests.exceptions.HTTPError as exc:
+            logger.error("텔레그램 이미지 전송 실패: %s", exc)
+            return False
+
+    logger.error("텔레그램 이미지 전송 실패: Rate Limit — 재시도 3회 소진")
+    return False
 
 
 def send_long_message(text: str, parse_mode: str = "Markdown") -> None:
@@ -167,7 +175,7 @@ def send_long_message(text: str, parse_mode: str = "Markdown") -> None:
 
     Telegram sendMessage 최대 길이(4096자)를 초과하는 일일 리포트 등에 사용.
     """
-    MAX = 4000
+    MAX = 2500   # 이모지 UTF-16 2-code-unit 계산 여유 (4096 - 이모지 오버헤드)
     if len(text) <= MAX:
         send_message(text, parse_mode)
         return
