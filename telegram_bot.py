@@ -12,6 +12,7 @@ Telegram Bot API를 requests로 직접 호출합니다.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 
 import requests
@@ -142,12 +143,50 @@ def send_photo(image_bytes: bytes, caption: str = "") -> bool:
             data=payload,
             timeout=TIMEOUT_SEC,
         )
+        if resp.status_code == 429:
+            retry_after = resp.json().get("parameters", {}).get("retry_after", 30)
+            logger.warning("Rate limit — %d초 대기 후 재시도", retry_after)
+            time.sleep(retry_after)
+            resp = requests.post(
+                _url("sendPhoto"),
+                files=files_data,
+                data=payload,
+                timeout=TIMEOUT_SEC,
+            )
         resp.raise_for_status()
         logger.info("텔레그램 이미지 전송 성공")
         return True
     except requests.RequestException as exc:
         logger.error("텔레그램 이미지 전송 실패: %s", exc)
         return False
+
+
+def send_long_message(text: str, parse_mode: str = "Markdown") -> None:
+    """
+    4096자 초과 메시지를 줄 단위로 분할하여 순서대로 전송합니다.
+
+    Telegram sendMessage 최대 길이(4096자)를 초과하는 일일 리포트 등에 사용.
+    """
+    MAX = 4000
+    if len(text) <= MAX:
+        send_message(text, parse_mode)
+        return
+
+    lines     = text.split("\n")
+    chunk: list[str] = []
+    size      = 0
+
+    for line in lines:
+        line_len = len(line) + 1          # +1 for \n
+        if size + line_len > MAX and chunk:
+            send_message("\n".join(chunk), parse_mode)
+            chunk = []
+            size  = 0
+        chunk.append(line)
+        size += line_len
+
+    if chunk:
+        send_message("\n".join(chunk), parse_mode)
 
 
 # ─────────────────────────────────────────────────────────────

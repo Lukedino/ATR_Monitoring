@@ -157,8 +157,8 @@ def job_daily_report() -> None:
         tg.send_message("ATR 계산 실패 — 데이터 부족")
         return
 
-    # 1. ATR 요약 텍스트
-    tg.send_message(tg.fmt_daily_report(summary))
+    # 1. ATR 요약 텍스트 (110종목 이상이면 4096자 초과 → 자동 분할 전송)
+    tg.send_long_message(tg.fmt_daily_report(summary))
 
     # 2. 포트폴리오 바차트
     bar_chart = plot_portfolio_atr_bar(summary, as_bytes=True)
@@ -172,12 +172,22 @@ def job_daily_report() -> None:
         if ch:
             chandelier_list.append(ch)
     if chandelier_list:
-        tg.send_message(tg.fmt_chandelier_report(chandelier_list))
+        tg.send_long_message(tg.fmt_chandelier_report(chandelier_list))
 
-    # 4. 종목별 미니 차트 (개별 전송)
-    logger.info("종목별 미니 차트 전송 시작")
+    # 4. 종목별 미니 차트 — Stop 근접 / ATR 스파이크 종목만 전송 (rate limit 방지)
+    near_stop_syms = {ch.symbol for ch in chandelier_list if ch.is_near_stop}
+    if "Spike" in summary.columns:
+        spike_syms = set(summary.loc[summary["Spike"].astype(bool), "Symbol"])
+    else:
+        spike_syms = set()
+    chart_targets = near_stop_syms | spike_syms
+
+    logger.info(
+        "종목별 미니 차트 전송 시작 (Stop근접 %d + 스파이크 %d = 총 %d종목)",
+        len(near_stop_syms), len(spike_syms), len(chart_targets),
+    )
     for symbol, df in ohlcv_map.items():
-        if df.empty:
+        if symbol not in chart_targets or df.empty:
             continue
         rec   = stop_recs.get(symbol)
         chart = plot_atr_chart(
@@ -187,6 +197,7 @@ def job_daily_report() -> None:
         )
         if chart:
             tg.send_photo(chart, caption=fmt_symbol(symbol))
+            time.sleep(2)   # Telegram rate limit 방지 (1msg/s 권장)
 
     logger.info("일일 리포트 완료")
 
