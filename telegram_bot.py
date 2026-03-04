@@ -23,6 +23,7 @@ from config import (
     fmt_price,
     fmt_symbol,
     SYMBOL_ACCOUNTS,
+    SYMBOL_ENTRY_PRICES,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,32 @@ def _account_tag(symbol: str) -> str:
     """인라인 계좌 태그 반환. 예: ' [ISA계좌, 연금저축]'"""
     accounts = SYMBOL_ACCOUNTS.get(symbol, [])
     return f" [{', '.join(accounts)}]" if accounts else ""
+
+
+def _entry_info_line(symbol: str, current_close: float, atr: float) -> str:
+    """
+    진입가 대비 수익률·ATR R배수 한 줄 반환. 진입가 미등록 시 빈 문자열.
+
+    R배수 = (현재가 - 진입가) / ATR  → 몇 ATR만큼 이익/손실인지
+    R ≥ 2 → 적극적 Stop 관리 / R ≥ 1 → Breakeven Stop 고려 / R < 0 → 손실 포지션
+
+    예: 진입 $185.00 | +5.6% (+2.3ATR) → Breakeven Stop 고려
+    """
+    entry = SYMBOL_ENTRY_PRICES.get(symbol)
+    if not entry or entry <= 0:
+        return ""
+    ret_pct = (current_close - entry) / entry * 100
+    r_val   = (current_close - entry) / atr if atr > 0 else 0.0
+    sign    = "+" if ret_pct >= 0 else ""
+    if r_val >= 2.0:
+        hint = " → 적극적 Stop 관리"
+    elif r_val >= 1.0:
+        hint = " → Breakeven Stop 고려"
+    elif r_val < 0:
+        hint = " ⚠️ 손실 포지션"
+    else:
+        hint = ""
+    return f"진입 {fmt_price(symbol, entry)} | {sign}{ret_pct:.1f}% ({sign}{r_val:.1f}ATR){hint}"
 
 
 def _url(method: str) -> str:
@@ -236,11 +263,15 @@ def fmt_daily_report(summary_df, title: str = "📈 포트폴리오 ATR 일일 �
         sym_display = fmt_symbol(sym)
         price_str   = fmt_price(sym, row["Close"])
         atr_str     = fmt_price(sym, row["ATR"])
-        lines.append("")
-        lines.append(
+        block = (
             f"{spike_mark} *{sym_display}*{_account_tag(sym)}\n"
             f"   종가 {price_str} | ATR {atr_str} | ATR% {row['ATR%']:.2f}%"
         )
+        entry_line = _entry_info_line(sym, row["Close"], row["ATR"])
+        if entry_line:
+            block += f"\n   {entry_line}"
+        lines.append("")
+        lines.append(block)
 
     return "\n".join(lines)
 
@@ -346,6 +377,9 @@ def fmt_chandelier_report(chandelier_results: list) -> str:
             f"{near_flag} *{sym_display}*{_account_tag(r.symbol)} ({r.market}·x{r.multiple})\n"
             f"   현재가 {fmt_price(r.symbol, r.current_close)} | Stop {fmt_price(r.symbol, r.stop_level)} | Gap {r.dist_to_stop_pct:.1f}% | ATR% {r.atr_pct:.2f}%"
         )
+        entry_line = _entry_info_line(r.symbol, r.current_close, r.atr)
+        if entry_line:
+            line += f"\n   {entry_line}"
         lines.append("")
         lines.append(line)
 

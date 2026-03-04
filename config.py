@@ -40,6 +40,9 @@ _kr_names_from_drive: dict[str, str] = {}
 # Drive에서 읽어온 계좌 매핑 (symbol → 계좌명 리스트)
 _symbol_accounts: dict[str, list[str]] = {}
 
+# Drive에서 읽어온 진입가격 (symbol → 평균 진입가, 복수 계좌면 평균)
+_symbol_entry_prices: dict[str, float] = {}
+
 # 구분 컬럼 → yfinance 심볼 suffix 매핑
 _CATEGORY_SUFFIX: dict[str, str] = {
     "한국":   ".KS",
@@ -60,8 +63,9 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
     - 계좌 컬럼 → _symbol_accounts 에 수집
     - 종목명 → _kr_names_from_drive 에 수집 (Ticker 컬럼 사용 시)
     """
-    global _kr_names_from_drive, _symbol_accounts
+    global _kr_names_from_drive, _symbol_accounts, _symbol_entry_prices
     df.columns = [str(c).strip() for c in df.columns]
+    _ep_acc: dict[str, list[float]] = {}
     symbols: list[str] = []
     for _, row in df.iterrows():
         category = str(row.get("구분", "")).strip()
@@ -90,6 +94,18 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
             acct_list = _symbol_accounts.setdefault(symbol, [])
             if account not in acct_list:
                 acct_list.append(account)
+
+        # 진입가격 수집 (같은 종목 복수 계좌면 평균)
+        ep_str = str(row.get("진입가격", "")).strip()
+        if ep_str and ep_str != "nan":
+            try:
+                ep = float(ep_str.replace(",", ""))
+                if ep > 0:
+                    _ep_acc.setdefault(symbol, []).append(ep)
+            except ValueError:
+                pass
+
+    _symbol_entry_prices = {sym: sum(v) / len(v) for sym, v in _ep_acc.items()}
     return {"포트폴리오": symbols}
 
 
@@ -165,6 +181,9 @@ ALL_SYMBOLS: list[str] = list(dict.fromkeys(s for symbols in PORTFOLIO.values() 
 
 # 심볼 → 계좌명 리스트 (알람 메시지에서 "대상: 계좌A, 계좌B" 표시용)
 SYMBOL_ACCOUNTS: dict[str, list[str]] = _symbol_accounts
+
+# 심볼 → 평균 진입가격 (진입가 대비 ATR 분석용, 미등록 종목은 키 없음)
+SYMBOL_ENTRY_PRICES: dict[str, float] = _symbol_entry_prices
 
 # 시장별 심볼 분류 (job_stop_check / daily_report 분리용)
 KR_SYMBOLS: list[str] = [

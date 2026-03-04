@@ -244,7 +244,39 @@ python monitor.py --list-pos
 | 2026-03-02 | `8cb1b42` | 텔레그램 대용량 메시지 분할 전송 / 차트 필터링 (Stop근접+ATR스파이크만) / sleep(2) 추가 |
 | 2026-03-03 | `35dbf5c` | 텔레그램 400/429 오류 근본 수정: MAX 4000→2500(이모지 UTF-16), 3회 재시도 + 최소 30초 대기, sleep(4) |
 | 2026-03-03 | `1178e1c` | GHA daily_report 스케줄 감지 수정: 정확한 분(minute) 비교 → 시간(hour) 범위 비교 |
-| 2026-03-04 | *(이번)* | 스케줄 전면 재편: 시장별 24h 모니터링 + kr/us daily_report 분리 |
+| 2026-03-04 | `2ebde26` | 스케줄 전면 재편: 시장별 24h 모니터링 + kr/us daily_report 분리 |
+| 2026-03-05 | *(이번)* | 진입가격 ATR 분석 추가: Drive 포트폴리오에서 진입가 수집, 리포트에 수익률·R배수·관리 힌트 표시 |
+
+### 진입가격 기반 ATR 분석 (2026-03-05 추가)
+
+Portfolio.xlsx의 `진입가격` 컬럼을 활용해 **현재가 기준** ATR 분석에 **진입가 기준** 분석을 병행 표시.
+
+#### R배수 (ATR 단위 수익/손실)
+
+```
+R배수 = (현재가 - 진입가) / ATR
+```
+
+- `+2.3ATR` → 현재 수익이 현재 ATR의 2.3배 → **적극적 Stop 관리** (≥ 2ATR)
+- `+1.1ATR` → 수익이 1ATR 이상 → **Breakeven Stop 고려** (≥ 1ATR)
+- `-1.6ATR` → 손실 포지션 → **⚠️ 손실 포지션**
+
+#### 일일 리포트 / Chandelier Stop 현황 표시 예시
+
+```
+🟢 *AAPL* [해외증권] (US·x2.0)
+   현재가 $195.43 | Stop $180.00 | Gap 7.9% | ATR% 2.32%
+   진입 $185.00 | +5.6% (+2.3ATR) → Breakeven Stop 고려
+```
+
+#### 구현 세부
+
+- `config.py`: `_parse_portfolio_df()`에서 `진입가격` 컬럼 수집 → `SYMBOL_ENTRY_PRICES` 전역 export
+  - 동일 종목이 복수 계좌에 있으면 진입가 평균 사용
+- `telegram_bot.py`: `_entry_info_line(symbol, close, atr)` 헬퍼 → `fmt_daily_report` / `fmt_chandelier_report` 양쪽에 적용
+  - 진입가 미등록 종목은 기존 포맷 그대로 (비침습적)
+
+---
 
 ### 텔레그램 전송 오류 원인 및 해결
 
