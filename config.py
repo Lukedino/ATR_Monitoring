@@ -166,6 +166,20 @@ ALL_SYMBOLS: list[str] = list(dict.fromkeys(s for symbols in PORTFOLIO.values() 
 # 심볼 → 계좌명 리스트 (알람 메시지에서 "대상: 계좌A, 계좌B" 표시용)
 SYMBOL_ACCOUNTS: dict[str, list[str]] = _symbol_accounts
 
+# 시장별 심볼 분류 (job_stop_check / daily_report 분리용)
+KR_SYMBOLS: list[str] = [
+    s for s in ALL_SYMBOLS
+    if s.upper().endswith('.KS') or s.upper().endswith('.KQ')
+]
+CRYPTO_SYMBOLS: list[str] = [
+    s for s in ALL_SYMBOLS
+    if s.upper().endswith('-USD') or s.upper().endswith('-USDT')
+]
+US_SYMBOLS: list[str] = [
+    s for s in ALL_SYMBOLS
+    if s not in KR_SYMBOLS and s not in CRYPTO_SYMBOLS
+]
+
 # ─────────────────────────────────────────────────────────────
 # ATR 파라미터
 # ─────────────────────────────────────────────────────────────
@@ -343,13 +357,11 @@ RISK_PER_TRADE: float    = float(os.getenv("RISK_PER_TRADE", 0.01))       # 1%
 STOP_LOSS_ATR_MULT: float = 2.0    # 레거시 호환 유지 (get_atr_multiple() 사용 권장)
 
 # ─────────────────────────────────────────────────────────────
-# 스케줄링 (한국 시간 기준 HH:MM)
+# 스케줄링 (KST 기준 — 로컬 스케줄러용)
+# GHA 스케줄은 atr_monitor.yml 참조
 # ─────────────────────────────────────────────────────────────
-SCHEDULE_TIMES: list[str] = [
-    "09:05",   # 국내장 시작 직후
-    "16:00",   # 국내장 마감 후
-    "23:00",   # 미국장 개장 전 (KST 23:30 = EST 09:30)
-]
+KR_REPORT_TIME: str = "17:00"   # 국내장 마감 후 일일 리포트 (KST)
+US_REPORT_TIME: str = "09:00"   # 미국장+크립토 마감 후 일일 리포트 (KST)
 
 # ─────────────────────────────────────────────────────────────
 # 차트 설정

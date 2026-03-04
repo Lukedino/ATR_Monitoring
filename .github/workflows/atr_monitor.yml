@@ -3,21 +3,25 @@ name: ATR Trailing Stop Monitor
 # ─────────────────────────────────────────────────────────────
 # 스케줄 (UTC 기준 / KST = UTC+9)
 #
-#  장중 30분 주기 : KST 09:00~15:30  =  UTC 00:00~06:30
-#  장마감 리포트  : KST 15:35         =  UTC 06:35
-#  미국장 개장 전 : KST 22:55         =  UTC 13:55
+#  전 종목 Stop 체크 (평일, 30분 간격, 24시간)
+#    → KR 08:00~17:00 / US Pre 18:00~ / US Post ~10:00 / Crypto 24h
+#  크립토 전용 Stop 체크 (주말, 30분 간격, 24시간)
+#  국내 일일 리포트  : KST 17:00  =  UTC 08:00  (평일)
+#  미국+크립토 리포트 : KST 09:00  =  UTC 00:00  (매일)
 # ─────────────────────────────────────────────────────────────
 on:
   schedule:
-    # 장중 30분 주기 Stop 체크 (UTC 00:00 ~ 06:30, 평일)
-    - cron: '0,30 0-5 * * 1-5'
-    - cron: '0    6   * * 1-5'
+    # 전 종목 Stop 체크 (평일, 30분 간격, 24시간)
+    - cron: '0,30 * * * 1-5'
 
-    # 장마감 후 일일 리포트 (UTC 06:35, 평일)
-    - cron: '35 6 * * 1-5'
+    # 크립토 전용 Stop 체크 (주말, 30분 간격)
+    - cron: '0,30 * * * 0,6'
 
-    # 미국장 개장 전 리포트 (UTC 13:55, 평일)
-    - cron: '55 13 * * 1-5'
+    # 국내 일일 리포트 (평일, KST 17:00 = UTC 08:00)
+    - cron: '0 8 * * 1-5'
+
+    # 미국+크립토 일일 리포트 (매일, KST 09:00 = UTC 00:00)
+    - cron: '0 0 * * *'
 
   # 수동 실행 (Actions 탭에서 직접 트리거)
   workflow_dispatch:
@@ -29,7 +33,9 @@ on:
         type: choice
         options:
           - stop_check
-          - daily_report
+          - crypto_stop_check
+          - kr_daily_report
+          - us_daily_report
           - trigger_check
 
 jobs:
@@ -65,25 +71,31 @@ jobs:
           fc-cache -fv
 
       # ── 4. 실행할 작업 결정 ───────────────────────────────
-      #   cron 시간에 따라 GHA_JOB 환경변수를 동적으로 설정
-      #   - UTC 06:35 / 13:55 → daily_report
-      #   - 그 외 → stop_check
+      #   github.event.schedule 로 어떤 cron이 실행됐는지 정확히 판별
+      #   (시간 파싱 방식 대비 GHA 지연 무관하게 신뢰도 높음)
       - name: Determine job type
         id: job_type
         run: |
-          MINUTE=$(date -u +%M)
-          HOUR=$(date -u +%H)
+          SCHEDULE="${{ github.event.schedule }}"
 
           # 수동 실행 시 입력값 우선
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "GHA_JOB=${{ inputs.job }}" >> $GITHUB_ENV
-          elif [ "$HOUR" = "06" ] && [ "$MINUTE" -ge 30 ]; then
-            # KST 15:35 daily_report — GHA 지연(최대 30분) 허용: UTC 06:30~06:59
-            echo "GHA_JOB=daily_report" >> $GITHUB_ENV
-          elif [ "$HOUR" = "13" ]; then
-            # KST 22:55 daily_report — UTC 13시대 전체 (stop_check 미스케줄 없음)
-            echo "GHA_JOB=daily_report" >> $GITHUB_ENV
+
+          elif [ "$SCHEDULE" = "0 8 * * 1-5" ]; then
+            # KST 17:00 국내 일일 리포트
+            echo "GHA_JOB=kr_daily_report" >> $GITHUB_ENV
+
+          elif [ "$SCHEDULE" = "0 0 * * *" ]; then
+            # KST 09:00 미국+크립토 일일 리포트
+            echo "GHA_JOB=us_daily_report" >> $GITHUB_ENV
+
+          elif [ "$SCHEDULE" = "0,30 * * * 0,6" ]; then
+            # 주말 크립토 전용 Stop 체크
+            echo "GHA_JOB=crypto_stop_check" >> $GITHUB_ENV
+
           else
+            # 평일 30분 주기 전 종목 Stop 체크
             echo "GHA_JOB=stop_check" >> $GITHUB_ENV
           fi
 
@@ -94,12 +106,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           # ── 포트폴리오 (Google Drive, 우선순위 1) ─────────────
-          # Google Cloud Service Account JSON 키 전체 내용
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          # Drive 파일 ID (URL의 /d/{FILE_ID}/ 부분)
           GDRIVE_PORTFOLIO_FILE_ID:    ${{ secrets.GDRIVE_PORTFOLIO_FILE_ID }}
           # ── 포트폴리오 (STOCK_LIST, 레거시 fallback) ──────────
-          # Drive 미설정 시 사용. 형식: {"국내주식":["005930.KS"],...}
           STOCK_LIST:         ${{ secrets.STOCK_LIST }}
           # 계좌 설정
           ACCOUNT_SIZE:       ${{ secrets.ACCOUNT_SIZE }}

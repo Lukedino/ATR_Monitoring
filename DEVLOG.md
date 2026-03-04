@@ -47,16 +47,27 @@ monitor.py
 
 ---
 
-## 스케줄 (KST 기준, 평일)
+## 스케줄 (KST 기준)
 
-| 시각 | 작업 | 내용 |
+| 시각 | 요일 | 작업 | 내용 |
+|---|---|---|---|
+| 00:00 ~ 23:30 (30분 간격) | **평일** | **stop_check** | 전 종목 Chandelier Stop 갱신 + 트리거 감지 |
+| 00:00 ~ 23:30 (30분 간격) | **주말** | **crypto_stop_check** | 크립토 전용 (KR/US 미장) |
+| **17:00** | 평일 | **kr_daily_report** | 국내 종목 ATR 일일 리포트 |
+| **09:00** | 매일 | **us_daily_report** | 미국+크립토 ATR 일일 리포트 |
+| 수동 | - | 위 작업 전체 | Actions 탭 → Run workflow |
+
+> **stop_check / crypto_stop_check** 는 이벤트 없으면 무음. daily_report 는 무조건 전송.
+
+### 시장별 모니터링 시간대 (KST)
+
+| 시장 | 운영 시간 | 모니터링 |
 |---|---|---|
-| 09:00 ~ 15:00 (30분 간격) | **stop_check** | Chandelier Stop 갱신 + 트리거 감지 |
-| **15:35** | **daily_report** | 국내장 마감 후 전체 ATR 리포트 |
-| **22:55** | **daily_report** | 미국장 개장 전 전체 ATR 리포트 |
-| 수동 | stop_check / daily_report / trigger_check | Actions 탭 → Run workflow |
-
-> **stop_check** 는 이벤트 없으면 무음. daily_report 는 무조건 전송.
+| 국내 (KR) | 09:00~15:30 (공식) → **08:00~17:00** 확장 | 평일 stop_check |
+| 미국 Pre-market | **18:00~22:30** (EST 04:00~09:30) | 평일 stop_check |
+| 미국 Regular | **22:30~05:00** (EST 09:30~16:00) | 평일 stop_check |
+| 미국 After-hours | **05:00~10:00** (EST 16:00~20:00) | 평일 stop_check |
+| 크립토 | **24시간 365일** | 평일 stop_check + 주말 crypto_stop_check |
 
 ---
 
@@ -69,12 +80,19 @@ monitor.py
 | 🔺 ATR Trailing Stop 갱신 | 등록 포지션의 Stop이 상향됐을 때 |
 | 🚨 즉각 대응 트리거 감지 | 급등/급락/갭/Stop근접 신호 감지 시 |
 
-### daily_report 실행 시 (무조건 발송)
+### kr_daily_report 실행 시 (무조건 발송, 평일 KST 17:00)
 
-1. 📈 포트폴리오 ATR 일일 리포트 (전 종목 요약)
-2. ATR% 바차트 이미지
-3. 📊 ATR Trailing Stop 현황 (Chandelier 전 종목, Stop거리 오름차순)
-4. 종목별 미니 차트 × N장
+1. 📈 국내 포트폴리오 ATR 일일 리포트 (국내 종목 요약)
+2. ATR% 바차트 이미지 (국내 종목)
+3. 📊 ATR Trailing Stop 현황 (국내 종목, Stop거리 오름차순)
+4. 종목별 미니 차트 × N장 (Stop근접+스파이크)
+
+### us_daily_report 실행 시 (무조건 발송, 매일 KST 09:00)
+
+1. 🌎 미국/크립토 포트폴리오 ATR 일일 리포트 (미국+크립토 요약)
+2. ATR% 바차트 이미지 (미국+크립토)
+3. 📊 ATR Trailing Stop 현황 (미국+크립토, Stop거리 오름차순)
+4. 종목별 미니 차트 × N장 (Stop근접+스파이크)
 
 ### 메시지 포맷 예시
 
@@ -226,6 +244,7 @@ python monitor.py --list-pos
 | 2026-03-02 | `8cb1b42` | 텔레그램 대용량 메시지 분할 전송 / 차트 필터링 (Stop근접+ATR스파이크만) / sleep(2) 추가 |
 | 2026-03-03 | `35dbf5c` | 텔레그램 400/429 오류 근본 수정: MAX 4000→2500(이모지 UTF-16), 3회 재시도 + 최소 30초 대기, sleep(4) |
 | 2026-03-03 | `1178e1c` | GHA daily_report 스케줄 감지 수정: 정확한 분(minute) 비교 → 시간(hour) 범위 비교 |
+| 2026-03-04 | *(이번)* | 스케줄 전면 재편: 시장별 24h 모니터링 + kr/us daily_report 분리 |
 
 ### 텔레그램 전송 오류 원인 및 해결
 

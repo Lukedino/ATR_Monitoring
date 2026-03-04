@@ -3,9 +3,11 @@
 
 실행 모드 (CLI):
   python monitor.py                  ← 스케줄 데몬 (로컬 실행용)
-  python monitor.py --once           ← 즉시 1회 전체 리포트
-  python monitor.py --stop-check     ← 즉시 1회 Stop 갱신 체크
+  python monitor.py --once           ← 즉시 1회 전체 리포트 (KR+US+Crypto)
+  python monitor.py --stop-check     ← 즉시 1회 Stop 갱신 체크 (전 종목)
   python monitor.py --trigger-check  ← 즉시 1회 즉각 트리거 체크
+  python monitor.py --kr-report      ← 즉시 국내 일일 리포트
+  python monitor.py --us-report      ← 즉시 미국+크립토 일일 리포트
   python monitor.py --chart AAPL     ← 특정 종목 차트 전송
   python monitor.py --add-pos 005930.KS 72000 67000   ← 포지션 등록
   python monitor.py --remove-pos 005930.KS             ← 포지션 제거
@@ -13,13 +15,18 @@
 
 GitHub Actions 환경:
   환경변수 GITHUB_ACTIONS=true 시 스케줄러 없이 단일 실행 후 종료
-  환경변수 GHA_JOB 으로 실행할 작업 지정 (stop_check / daily_report / trigger_check)
-  실행 결과(stop_levels.json 변경)는 워크플로우에서 git commit/push
+  환경변수 GHA_JOB 으로 실행할 작업 지정:
+    stop_check        — 전 종목 Chandelier Stop 갱신 (평일 30분 주기)
+    crypto_stop_check — 크립토 전용 Stop 갱신 (주말 30분 주기)
+    kr_daily_report   — 국내 종목 일일 리포트 (KST 17:00, 평일)
+    us_daily_report   — 미국+크립토 일일 리포트 (KST 09:00, 매일)
+    trigger_check     — 즉각 대응 트리거 체크
 
-작업 흐름:
-  장중 30분 주기  → job_stop_check()   : Chandelier Stop 갱신 여부 판단
-  장마감 후       → job_daily_report() : 전체 ATR 현황 리포트
-  상시 10분 주기  → job_trigger_check(): 즉각 대응 트리거 감지
+스케줄 (GHA, KST 기준):
+  평일 00:00~23:30 (30분 간격) — stop_check (전 종목)
+  주말 00:00~23:30 (30분 간격) — crypto_stop_check (크립토)
+  평일 17:00 — kr_daily_report
+  매일 09:00 — us_daily_report (미국장 포스트마켓 종료 후)
 """
 from __future__ import annotations
 
@@ -33,7 +40,11 @@ import schedule
 
 from config import (
     ALL_SYMBOLS,
-    SCHEDULE_TIMES,
+    KR_SYMBOLS,
+    US_SYMBOLS,
+    CRYPTO_SYMBOLS,
+    KR_REPORT_TIME,
+    US_REPORT_TIME,
     ATR_PERIOD,
     fmt_symbol,
 )
@@ -72,17 +83,21 @@ IS_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS", "").lower() == "true"
 # 핵심 작업 함수
 # ─────────────────────────────────────────────────────────────
 
-def job_stop_check() -> None:
+def job_stop_check(symbols: list[str] | None = None) -> None:
     """
-    [장중 30분 주기] Chandelier Stop 갱신 체크.
+    [30분 주기] Chandelier Stop 갱신 체크.
+
+    symbols=None 이면 ALL_SYMBOLS 전 종목 처리.
+    주말 크립토 전용 체크 시 CRYPTO_SYMBOLS 전달.
 
     각 종목:
       1. Chandelier Stop 재계산
       2. 등록 Stop과 비교 → New > Current 이면 갱신 알림
       3. 즉각 트리거 감지 → 긴급 알림
     """
-    logger.info("Stop 갱신 체크 시작")
-    ohlcv_map   = fetch_portfolio(ALL_SYMBOLS)
+    syms = symbols if symbols is not None else ALL_SYMBOLS
+    logger.info("Stop 갱신 체크 시작 (%d종목)", len(syms))
+    ohlcv_map   = fetch_portfolio(syms)
     stop_recs   = load_stops()
     updated_any = False
 
@@ -137,32 +152,32 @@ def job_stop_check() -> None:
     logger.info("Stop 갱신 체크 완료")
 
 
-def job_daily_report() -> None:
+def _run_daily_report(symbols: list[str], title: str) -> None:
     """
-    [장마감 후] 포트폴리오 전체 ATR 현황 리포트.
+    시장별 일일 ATR 리포트 공통 로직.
 
-      1. 전체 ATR 요약
-      2. ATR% 비교 바차트
-      3. Chandelier Stop 현황
-      4. 종목별 미니 차트
+    Parameters
+    ----------
+    symbols : 리포트 대상 심볼 리스트
+    title   : 텔레그램 메시지 헤더 (이모지 포함)
     """
-    logger.info("일일 리포트 시작")
-    ohlcv_map = fetch_portfolio(ALL_SYMBOLS)
+    logger.info("%s 시작", title)
+    ohlcv_map = fetch_portfolio(symbols)
     if not ohlcv_map:
-        tg.send_message("데이터 수집 실패 — 모든 종목 조회 오류")
+        tg.send_message(f"데이터 수집 실패 — {title}")
         return
 
     summary = summarize_portfolio_atr(ohlcv_map, ATR_PERIOD)
     if summary.empty:
-        tg.send_message("ATR 계산 실패 — 데이터 부족")
+        tg.send_message(f"ATR 계산 실패 — 데이터 부족 ({title})")
         return
 
-    # 1. ATR 요약 텍스트 (110종목 이상이면 4096자 초과 → 자동 분할 전송)
-    tg.send_long_message(tg.fmt_daily_report(summary))
+    # 1. ATR 요약 텍스트
+    tg.send_long_message(tg.fmt_daily_report(summary, title))
 
     # 2. 포트폴리오 바차트
     bar_chart = plot_portfolio_atr_bar(summary, as_bytes=True)
-    tg.send_photo(bar_chart, caption="포트폴리오 ATR% 비교")
+    tg.send_photo(bar_chart, caption="ATR% 비교")
 
     # 3. Chandelier Stop 전체 현황
     stop_recs       = load_stops()
@@ -199,7 +214,20 @@ def job_daily_report() -> None:
             tg.send_photo(chart, caption=fmt_symbol(symbol))
             time.sleep(4)   # Telegram rate limit 방지 (분당 15장 ≈ 안전 한도)
 
-    logger.info("일일 리포트 완료")
+    logger.info("%s 완료", title)
+
+
+def job_kr_daily_report() -> None:
+    """[KST 17:00, 평일] 국내 종목 ATR 일일 리포트."""
+    _run_daily_report(KR_SYMBOLS, "📈 국내 포트폴리오 ATR 일일 리포트")
+
+
+def job_us_daily_report() -> None:
+    """[KST 09:00, 매일] 미국+크립토 ATR 일일 리포트."""
+    _run_daily_report(
+        US_SYMBOLS + CRYPTO_SYMBOLS,
+        "🌎 미국/크립토 포트폴리오 ATR 일일 리포트",
+    )
 
 
 def job_trigger_check() -> None:
@@ -237,17 +265,21 @@ def job_trigger_check() -> None:
 def run_github_actions_mode() -> None:
     """
     GitHub Actions 환경: 환경변수 GHA_JOB 으로 작업 선택 후 종료.
-      GHA_JOB=stop_check    (기본값) — 장중 체크
-      GHA_JOB=daily_report           — 장마감 리포트
-      GHA_JOB=trigger_check          — 트리거 체크
+      GHA_JOB=stop_check        (기본값) — 전 종목 장중 체크
+      GHA_JOB=crypto_stop_check          — 크립토 전용 체크 (주말)
+      GHA_JOB=kr_daily_report            — 국내 일일 리포트 (KST 17:00)
+      GHA_JOB=us_daily_report            — 미국+크립토 리포트 (KST 09:00)
+      GHA_JOB=trigger_check              — 트리거 체크
     """
     job_name = os.getenv("GHA_JOB", "stop_check")
     logger.info("GitHub Actions 모드 — 작업: %s", job_name)
 
     dispatch = {
-        "stop_check":    job_stop_check,
-        "daily_report":  job_daily_report,
-        "trigger_check": job_trigger_check,
+        "stop_check":        lambda: job_stop_check(),
+        "crypto_stop_check": lambda: job_stop_check(CRYPTO_SYMBOLS),
+        "kr_daily_report":   job_kr_daily_report,
+        "us_daily_report":   job_us_daily_report,
+        "trigger_check":     job_trigger_check,
     }
     fn = dispatch.get(job_name)
     if fn is None:
@@ -263,21 +295,24 @@ def run_github_actions_mode() -> None:
 # ─────────────────────────────────────────────────────────────
 
 def run_scheduler() -> None:
-    # 장마감 후 일일 리포트
-    for t in SCHEDULE_TIMES:
-        schedule.every().day.at(t).do(job_daily_report)
+    # 국내 일일 리포트 (KST 17:00, 평일)
+    schedule.every().day.at(KR_REPORT_TIME).do(job_kr_daily_report)
 
-    # 장중 30분 주기 Stop 갱신 체크
+    # 미국+크립토 일일 리포트 (KST 09:00, 매일)
+    schedule.every().day.at(US_REPORT_TIME).do(job_us_daily_report)
+
+    # 전 종목 Stop 체크 (30분 주기, 24h)
     schedule.every(30).minutes.do(job_stop_check)
 
-    # 즉각 트리거 10분 주기
+    # 즉각 트리거 체크 (10분 주기, 24h)
     schedule.every(10).minutes.do(job_trigger_check)
 
     logger.info("스케줄러 시작 — Ctrl+C로 종료")
     tg.send_message(
         f"ATR 모니터링 시작\n"
-        f"모니터링: {len(ALL_SYMBOLS)}종목\n"
-        f"일일 리포트: {', '.join(SCHEDULE_TIMES)}\n"
+        f"모니터링: {len(ALL_SYMBOLS)}종목 "
+        f"(KR {len(KR_SYMBOLS)} / US {len(US_SYMBOLS)} / Crypto {len(CRYPTO_SYMBOLS)})\n"
+        f"국내 리포트: KST {KR_REPORT_TIME} / 미국 리포트: KST {US_REPORT_TIME}\n"
         f"Stop 체크: 30분 주기 / 트리거: 10분 주기"
     )
     try:
@@ -300,9 +335,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="포트폴리오 ATR Trailing Stop 모니터")
     group  = parser.add_mutually_exclusive_group()
-    group.add_argument("--once",          action="store_true")
-    group.add_argument("--stop-check",    action="store_true")
-    group.add_argument("--trigger-check", action="store_true")
+    group.add_argument("--once",          action="store_true", help="즉시 1회 전체 리포트 (KR+US+Crypto)")
+    group.add_argument("--stop-check",    action="store_true", help="즉시 1회 Stop 갱신 체크")
+    group.add_argument("--trigger-check", action="store_true", help="즉시 1회 트리거 체크")
+    group.add_argument("--kr-report",     action="store_true", help="즉시 국내 일일 리포트")
+    group.add_argument("--us-report",     action="store_true", help="즉시 미국+크립토 일일 리포트")
     group.add_argument("--chart",         metavar="SYMBOL")
     group.add_argument("--add-pos",       nargs=3, metavar=("SYMBOL", "ENTRY", "STOP"))
     group.add_argument("--remove-pos",    metavar="SYMBOL")
@@ -310,11 +347,16 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.once:
-        job_daily_report()
+        job_kr_daily_report()
+        job_us_daily_report()
     elif args.stop_check:
         job_stop_check()
     elif args.trigger_check:
         job_trigger_check()
+    elif args.kr_report:
+        job_kr_daily_report()
+    elif args.us_report:
+        job_us_daily_report()
     elif args.chart:
         sym = args.chart.upper()
         df  = fetch_ohlcv(sym)

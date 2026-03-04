@@ -217,13 +217,13 @@ def fmt_spike_alert(symbol: str, atr: float, atr_avg: float, atr_pct: float) -> 
     )
 
 
-def fmt_daily_report(summary_df) -> str:
+def fmt_daily_report(summary_df, title: str = "📈 포트폴리오 ATR 일일 리포트") -> str:
     """일별 포트폴리오 ATR 현황 리포트 메시지 생성."""
     now         = datetime.now().strftime("%Y-%m-%d %H:%M")
     spike_count = int(summary_df["Spike"].sum()) if "Spike" in summary_df.columns else 0
 
     lines = [
-        f"📈 *포트폴리오 ATR 일일 리포트*",
+        f"*{title}*",
         f"━━━━━━━━━━━━━━━━",
         f"📅 {now}",
         f"종목 {len(summary_df)}개 | 스파이크 {spike_count}개",
