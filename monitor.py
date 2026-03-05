@@ -18,15 +18,15 @@ GitHub Actions 환경:
   환경변수 GHA_JOB 으로 실행할 작업 지정:
     stop_check        — 전 종목 Chandelier Stop 갱신 (평일 30분 주기)
     crypto_stop_check — 크립토 전용 Stop 갱신 (주말 30분 주기)
-    kr_daily_report   — 국내 종목 일일 리포트 (KST 18:30, 평일)
-    us_daily_report   — 미국+크립토 일일 리포트 (KST 09:00, 매일)
+    kr_daily_report   — 국내 종목 일일 리포트 (KST 18:00, 평일)
+    us_daily_report   — 미국+크립토 일일 리포트 (KST 08:00, 매일)
     trigger_check     — 즉각 대응 트리거 체크
 
 스케줄 (GHA, KST 기준):
   평일 00:00~23:30 (30분 간격) — stop_check (전 종목)
   주말 00:00~23:30 (30분 간격) — crypto_stop_check (크립토)
-  평일 18:30 — kr_daily_report
-  매일 09:00 — us_daily_report (미국장 포스트마켓 종료 후)
+  평일 18:00 — kr_daily_report
+  매일 08:00 — us_daily_report (미국장 포스트마켓 종료 후)
 """
 from __future__ import annotations
 
