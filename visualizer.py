@@ -52,22 +52,32 @@ def _rolling_chandelier_series(
     """
     각 날짜별 Chandelier Stop을 롤링으로 계산하여 시리즈로 반환합니다.
     차트에 Stop 궤적을 그리기 위해 사용합니다.
+
+    Trailing 원칙 적용: Stop은 상향만 허용 (하향 거부).
+    Raw 공식만 사용하면 20일 고점이 윈도우 밖으로 빠질 때 Stop이 내려가므로
+    max(raw_stop, prev_stop) 으로 항상 상향만 허용합니다.
     """
-    from config import get_atr_multiple, get_market_type
+    from config import get_atr_multiple
     from atr_calculator import calc_atr
 
     atr_series = calc_atr(df, period)
     atr_pct    = (atr_series / df["Close"] * 100)
     stops      = pd.Series(index=df.index, dtype=float)
 
+    prev_stop: float | None = None
     for i in range(hh_window + period, len(df)):
-        hh   = df["High"].iloc[i - hh_window: i + 1].max()
-        atr  = atr_series.iloc[i]
-        pct  = atr_pct.iloc[i]
+        hh  = df["High"].iloc[i - hh_window: i + 1].max()
+        atr = atr_series.iloc[i]
+        pct = atr_pct.iloc[i]
         if pd.isna(atr):
             continue
-        mult        = get_atr_multiple(symbol, float(pct))
-        stops.iloc[i] = hh - atr * mult
+        mult     = get_atr_multiple(symbol, float(pct))
+        raw_stop = hh - atr * mult
+
+        # Trailing: 상향만 허용 — raw가 내려가도 이전 Stop 유지
+        stop          = max(raw_stop, prev_stop) if prev_stop is not None else raw_stop
+        stops.iloc[i] = stop
+        prev_stop     = stop
 
     stops.name = "ChandelierStop"
     return stops
@@ -134,17 +144,23 @@ def plot_atr_chart(
     ax_price = axes[0]
     ax_price.plot(df_plot.index, df_plot["Close"], color="#1f77b4", linewidth=1.5, label="종가", zorder=3)
 
-    # Chandelier Stop 시계열 (롤링 계산)
+    # Chandelier Stop 시계열 (롤링 계산, Trailing 적용)
     if stop_plot is not None and not stop_plot.dropna().empty:
         ax_price.plot(
             stop_plot.index, stop_plot,
-            color="#d62728", linewidth=1.5, linestyle="--", label="Chandelier Stop", zorder=4,
+            color="#d62728", linewidth=1.5, linestyle="--", label="Chandelier Stop (Trailing)", zorder=4,
         )
-        # Stop과 종가 사이 음영 (안전 구간)
+        # 안전 구간: Close > Stop (녹색 음영)
         ax_price.fill_between(
             stop_plot.index, stop_plot, df_plot["Close"],
             where=(df_plot["Close"] > stop_plot),
             alpha=0.08, color="#2ca02c", label="안전 구간",
+        )
+        # 이탈 구간: Stop > Close (적색 음영)
+        ax_price.fill_between(
+            stop_plot.index, stop_plot, df_plot["Close"],
+            where=(stop_plot >= df_plot["Close"]),
+            alpha=0.15, color="#d62728", label="Stop 이탈 구간",
         )
 
     # 등록된 현재 Stop 수평선
