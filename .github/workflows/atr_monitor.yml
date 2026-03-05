@@ -17,8 +17,8 @@ on:
     # 크립토 전용 Stop 체크 (주말, 30분 간격)
     - cron: '0,30 * * * 0,6'
 
-    # 국내 일일 리포트 (평일, KST 17:00 = UTC 08:00)
-    - cron: '0 8 * * 1-5'
+    # 국내 일일 리포트 (평일, KST 18:30 = UTC 09:30)
+    - cron: '30 9 * * 1-5'
 
     # 미국+크립토 일일 리포트 (매일, KST 09:00 = UTC 00:00)
     - cron: '0 0 * * *'
@@ -82,8 +82,8 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "GHA_JOB=${{ inputs.job }}" >> $GITHUB_ENV
 
-          elif [ "$SCHEDULE" = "0 8 * * 1-5" ]; then
-            # KST 17:00 국내 일일 리포트
+          elif [ "$SCHEDULE" = "30 9 * * 1-5" ]; then
+            # KST 18:30 국내 일일 리포트
             echo "GHA_JOB=kr_daily_report" >> $GITHUB_ENV
 
           elif [ "$SCHEDULE" = "0 0 * * *" ]; then

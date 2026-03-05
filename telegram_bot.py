@@ -337,6 +337,16 @@ def fmt_trigger_alert(symbol: str, triggers: list[str], close: float, stop: floa
         stop_line = f"현재가 {fmt_price(symbol, close)} | Stop {fmt_price(symbol, stop)} (거리 {dist_pct:.1f}%)\n"
     else:
         stop_line = f"현재가 {fmt_price(symbol, close)}\n"
+
+    # 트리거 유형에 따라 행동 지침 결정
+    trigger_types = {t.split()[0] for t in triggers}
+    if "STOP" in trigger_types:
+        action = "🔴 매도 준비! ATR Stop 도달 임박 — 손절 기준 재확인"
+    elif "SURGE" in trigger_types or "GAP" in trigger_types:
+        action = "📈 ATR Stop 상향조정 필요! 가격 상승에 맞춰 Stop 재계산"
+    else:  # VOLUME 등
+        action = "🔍 ATR 확인 — 거래량 급증 감지, 추가 변동성 주의"
+
     return (
         f"🚨 *즉각 대응 트리거 감지*\n"
         f"━━━━━━━━━━━━━━━━\n"
@@ -346,7 +356,7 @@ def fmt_trigger_alert(symbol: str, triggers: list[str], close: float, stop: floa
         f"━━━━━━━━━━━━━━━━\n"
         f"{tlist}\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"⚠️ ATR Stop 즉각 재점검 필요!\n"
+        f"{action}\n"
         f"📅 {now}"
     )
 
