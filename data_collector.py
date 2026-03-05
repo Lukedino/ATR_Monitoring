@@ -20,9 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 def _build_date_range(lookback_days: int) -> tuple[str, str]:
-    """오늘 기준으로 시작일/종료일 문자열(YYYY-MM-DD) 반환."""
-    end   = datetime.today()
-    start = end - timedelta(days=lookback_days)
+    """오늘 기준으로 시작일/종료일 문자열(YYYY-MM-DD) 반환.
+
+    yfinance history(end=...) 는 end 날짜를 exclusive 처리하므로
+    오늘 데이터를 포함하려면 end = today + 1일 이 필요합니다.
+    """
+    today = datetime.today()
+    end   = today + timedelta(days=1)   # yfinance exclusive end → 오늘 포함
+    start = today - timedelta(days=lookback_days)
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
 

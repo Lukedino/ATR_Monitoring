@@ -373,9 +373,13 @@ def fmt_chandelier_report(chandelier_results: list) -> str:
     for r in sorted(chandelier_results, key=lambda x: x.dist_to_stop_pct):
         sym_display = fmt_symbol(r.symbol)
         near_flag   = "🔴" if r.is_near_stop else "🟢"
+        if r.is_breached:
+            gap_str = f"⚠️ 이탈 (Stop이 현재가보다 {abs(r.dist_to_stop_pct):.1f}% 위)"
+        else:
+            gap_str = f"Gap {r.dist_to_stop_pct:.1f}%"
         line = (
             f"{near_flag} *{sym_display}*{_account_tag(r.symbol)} ({r.market}·x{r.multiple})\n"
-            f"   현재가 {fmt_price(r.symbol, r.current_close)} | Stop {fmt_price(r.symbol, r.stop_level)} | Gap {r.dist_to_stop_pct:.1f}% | ATR% {r.atr_pct:.2f}%"
+            f"   현재가 {fmt_price(r.symbol, r.current_close)} | Stop {fmt_price(r.symbol, r.stop_level)} | {gap_str} | ATR% {r.atr_pct:.2f}%"
         )
         entry_line = _entry_info_line(r.symbol, r.current_close, r.atr)
         if entry_line:

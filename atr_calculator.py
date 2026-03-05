@@ -153,9 +153,14 @@ class ChandelierResult:
     market:          str     # 시장 유형 (KR/US/Crypto/ETF)
 
     @property
+    def is_breached(self) -> bool:
+        """Stop이 현재가보다 높음 (Chandelier Exit 이미 이탈 상태)."""
+        return self.stop_level > self.current_close
+
+    @property
     def is_near_stop(self) -> bool:
-        """현재가가 Stop의 5% 이내면 True (즉각 대응 트리거)."""
-        return 0 < self.dist_to_stop_pct <= 5.0
+        """현재가가 Stop의 5% 이내이거나 이미 이탈한 경우 True."""
+        return self.is_breached or (0 < self.dist_to_stop_pct <= 5.0)
 
     def summary_line(self) -> str:
         near = " [STOP NEAR!]" if self.is_near_stop else ""
