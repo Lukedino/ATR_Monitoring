@@ -152,6 +152,26 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
     logger.info("Stop 갱신 체크 완료")
 
 
+def _get_data_date(ohlcv_map: dict) -> str:
+    """
+    ohlcv_map 내 종목들의 공통 데이터 기준일을 반환합니다.
+
+    가장 많은 종목이 공유하는 마지막 거래일을 선택합니다.
+    """
+    from collections import Counter
+    dates = []
+    for df in ohlcv_map.values():
+        if df.empty:
+            continue
+        last_idx = df.index[-1]
+        d = last_idx.date() if hasattr(last_idx, "date") else last_idx
+        dates.append(d)
+    if not dates:
+        return "?"
+    most_common = Counter(dates).most_common(1)[0][0]
+    return most_common.strftime("%Y-%m-%d")
+
+
 def _run_daily_report(symbols: list[str], title: str) -> None:
     """
     시장별 일일 ATR 리포트 공통 로직.
@@ -172,8 +192,10 @@ def _run_daily_report(symbols: list[str], title: str) -> None:
         tg.send_message(f"ATR 계산 실패 — 데이터 부족 ({title})")
         return
 
+    data_date = _get_data_date(ohlcv_map)
+
     # 1. ATR 요약 텍스트
-    tg.send_long_message(tg.fmt_daily_report(summary, title))
+    tg.send_long_message(tg.fmt_daily_report(summary, title, data_date=data_date))
 
     # 2. 포트폴리오 바차트
     bar_chart = plot_portfolio_atr_bar(summary, as_bytes=True)
@@ -218,12 +240,12 @@ def _run_daily_report(symbols: list[str], title: str) -> None:
 
 
 def job_kr_daily_report() -> None:
-    """[KST 18:30, 평일] 국내 종목 ATR 일일 리포트."""
+    """[KST 18:00, 평일] 국내 종목 ATR 일일 리포트."""
     _run_daily_report(KR_SYMBOLS, "📈 국내 포트폴리오 ATR 일일 리포트")
 
 
 def job_us_daily_report() -> None:
-    """[KST 09:00, 매일] 미국+크립토 ATR 일일 리포트."""
+    """[KST 08:00, 매일] 미국+크립토 ATR 일일 리포트."""
     _run_daily_report(
         US_SYMBOLS + CRYPTO_SYMBOLS,
         "🌎 미국/크립토 포트폴리오 ATR 일일 리포트",

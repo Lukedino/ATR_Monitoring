@@ -65,7 +65,22 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
             logger.warning("%s: 누락 컬럼 %s", symbol, missing)
             return pd.DataFrame()
 
-        return df[required].dropna()
+        # Close 기준으로만 dropna — Volume NaN으로 인해 오늘 데이터가 삭제되는 것 방지
+        df = df[required].dropna(subset=["Close"])
+
+        # 데이터 최신성 경고 (1 거래일 이상 오래된 경우)
+        if not df.empty:
+            last_idx = df.index[-1]
+            last_date = last_idx.date() if hasattr(last_idx, "date") else last_idx
+            today_date = datetime.today().date()
+            days_old = (today_date - last_date).days
+            if days_old > 1:
+                logger.warning(
+                    "오래된 데이터 감지: %s → 마지막 날짜 %s (%d일 전) — Yahoo Finance 지연 가능성",
+                    symbol, last_date, days_old,
+                )
+
+        return df
 
     except Exception as exc:
         logger.error("데이터 조회 실패 (%s): %s", symbol, exc)
