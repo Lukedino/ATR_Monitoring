@@ -257,13 +257,15 @@ def check_immediate_triggers(
     current_stop: float | None = None,
 ) -> TriggerResult:
     """
-    즉각 대응이 필요한 4가지 트리거 조건을 감지합니다.
+    즉각 대응이 필요한 6가지 트리거 조건을 감지합니다.
 
     트리거 조건:
       1. 당일 +5% 이상 급등   → Highest High 대폭 갱신
       2. 거래량 20일 평균 300% → 변동성 급증 전조
       3. 갭 상승 +3% 이상     → ATR 급등 선행 신호
       4. 현재가 Stop 5% 이내  → 손절 직전
+      5. 당일 -5% 이상 급락   → 손실 확대 경보
+      6. 갭 하락 -3% 이상     → Stop 즉시 이탈 위험
 
     Parameters
     ----------
@@ -301,6 +303,14 @@ def check_immediate_triggers(
         dist = (latest["Close"] - current_stop) / latest["Close"] * 100
         if 0 < dist <= 5.0:
             triggers.append(f"STOP NEAR {dist:.1f}% (Stop={current_stop:,.2f})")
+
+    # 트리거 5: 당일 급락 -5%
+    if daily_chg <= -5.0:
+        triggers.append(f"SURGE DOWN {daily_chg:.1f}% (손실 확대 경보)")
+
+    # 트리거 6: 갭 하락 -3%
+    if gap_pct <= -3.0:
+        triggers.append(f"GAP DOWN {gap_pct:.1f}% (Stop 즉시 이탈 위험)")
 
     return TriggerResult(symbol=symbol, triggers=triggers)
 
