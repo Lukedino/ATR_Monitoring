@@ -5,6 +5,7 @@ yfinance 기반 OHLCV 데이터 수집 모듈
 - 단일/복수 심볼 다운로드
 - High, Low, Close 컬럼 정규화
 - 국내 주식(.KS/.KQ), 해외 주식, 암호화폐, ETF 통합 처리
+- fast_info 실시간 보완: history() 지연 시 오늘 데이터 주입
 """
 from __future__ import annotations
 
@@ -31,6 +32,82 @@ def _build_date_range(lookback_days: int) -> tuple[str, str]:
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
 
+def _strip_timezone(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    yfinance가 반환하는 timezone-aware DatetimeIndex를 로컬 날짜 기준으로 변환합니다.
+
+    .tz_convert(None)은 UTC로 변환하므로 KR/US 시장 날짜가 하루 밀릴 수 있습니다.
+    strftime('%Y-%m-%d')로 로컬 날짜 문자열을 추출 후 재파싱하여 날짜 이동 없이 tz 제거.
+
+    예: 2026-03-09 00:00:00+09:00 → 2026-03-09 00:00:00 (KST 날짜 유지)
+    """
+    if df.index.tz is not None:
+        df = df.copy()
+        df.index = pd.to_datetime(df.index.strftime("%Y-%m-%d"))
+        df.index.name = "Date"
+    return df
+
+
+def _is_stale(last_date: "datetime.date", today: "datetime.date") -> bool:
+    """
+    마지막 데이터 날짜가 오래된 것인지 판별합니다.
+
+    주말/공휴일을 고려하여 3 거래일(달력 기준 5일) 이상 차이날 때만 True.
+    월요일 실행 시 금요일 데이터(3일 차이)는 정상으로 간주합니다.
+    """
+    days_old = (today - last_date).days
+    return days_old > 4   # 공휴일 연휴까지 감안하여 4일 초과부터 경고
+
+
+def _supplement_today_from_fast_info(
+    ticker: yf.Ticker,
+    symbol: str,
+    df: pd.DataFrame,
+    today: "datetime.date",
+) -> pd.DataFrame:
+    """
+    yfinance history()에 오늘 데이터가 없을 때 fast_info 실시간 가격으로 보완합니다.
+
+    보완 조건:
+    - fast_info.last_price 가 존재하고 0보다 클 것
+    - df의 마지막 Close와 0.1% 이상 차이날 것 (같으면 비거래일 = 보완 불필요)
+
+    장중 호출 시에는 현재가(intraday)가, 장마감 후에는 종가가 주입됩니다.
+    """
+    try:
+        fi = ticker.fast_info
+        last_price = getattr(fi, "last_price", None)
+        if not last_price or last_price <= 0:
+            return df
+
+        last_close = float(df.iloc[-1]["Close"])
+        # 가격 차이 0.1% 이내 → 이미 최신 데이터 포함 (비거래일 등)
+        if abs(last_price - last_close) / last_close < 0.001:
+            return df
+
+        today_row = pd.DataFrame(
+            [{
+                "Open":   getattr(fi, "open",        last_price),
+                "High":   getattr(fi, "day_high",    last_price),
+                "Low":    getattr(fi, "day_low",     last_price),
+                "Close":  last_price,
+                "Volume": int(getattr(fi, "last_volume", 0) or 0),
+            }],
+            index=[pd.Timestamp(today)],
+        )
+        today_row.index.name = "Date"
+        df = pd.concat([df, today_row])
+        logger.info(
+            "fast_info 보완: %s → 오늘 Close %.4f 주입 (history 지연 감지)",
+            symbol, last_price,
+        )
+
+    except Exception as exc:
+        logger.warning("fast_info 보완 실패 (%s): %s", symbol, exc)
+
+    return df
+
+
 def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame:
     """
     단일 심볼의 OHLCV 데이터를 가져옵니다.
@@ -42,7 +119,7 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
 
     Returns
     -------
-    columns: Date(index), Open, High, Low, Close, Volume
+    columns: Date(index, timezone-naive), Open, High, Low, Close, Volume
     실패 시 빈 DataFrame 반환
     """
     start, end = _build_date_range(lookback_days)
@@ -58,6 +135,10 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
         df.columns = [c.strip().capitalize() for c in df.columns]
         df.index.name = "Date"
 
+        # 타임존 제거: 시장 로컬 날짜 기준으로 naive index 변환
+        # (tz_convert(None)은 UTC 변환으로 날짜가 밀리므로 replace 방식 사용)
+        df = _strip_timezone(df)
+
         # 필요한 컬럼만 유지
         required = ["Open", "High", "Low", "Close", "Volume"]
         missing = [c for c in required if c not in df.columns]
@@ -68,16 +149,22 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
         # Close 기준으로만 dropna — Volume NaN으로 인해 오늘 데이터가 삭제되는 것 방지
         df = df[required].dropna(subset=["Close"])
 
-        # 데이터 최신성 경고 (1 거래일 이상 오래된 경우)
-        if not df.empty:
-            last_idx = df.index[-1]
-            last_date = last_idx.date() if hasattr(last_idx, "date") else last_idx
-            today_date = datetime.today().date()
-            days_old = (today_date - last_date).days
-            if days_old > 1:
+        if df.empty:
+            return pd.DataFrame()
+
+        # 최신성 확인 및 fast_info 보완
+        today = datetime.today().date()
+        last_date = df.index[-1].date()
+
+        if last_date < today:
+            # 거래일 지연: fast_info 실시간 가격으로 오늘 행 보완 시도
+            df = _supplement_today_from_fast_info(ticker, symbol, df, today)
+            # 보완 후에도 stale하면 경고
+            last_date_after = df.index[-1].date()
+            if _is_stale(last_date_after, today):
                 logger.warning(
-                    "오래된 데이터 감지: %s → 마지막 날짜 %s (%d일 전) — Yahoo Finance 지연 가능성",
-                    symbol, last_date, days_old,
+                    "오래된 데이터 감지: %s → 마지막 날짜 %s (%d일 전) — 거래 정지/Yahoo 지연 가능성",
+                    symbol, last_date_after, (today - last_date_after).days,
                 )
 
         return df
@@ -110,7 +197,20 @@ def fetch_portfolio(
 
 
 def get_latest_price(symbol: str) -> float | None:
-    """심볼의 최신 종가를 반환합니다."""
+    """
+    심볼의 최신 종가(또는 현재가)를 반환합니다.
+
+    fast_info를 우선 사용하여 실시간 가격을 반환하고,
+    실패 시 history fallback.
+    """
+    try:
+        fi = yf.Ticker(symbol).fast_info
+        price = getattr(fi, "last_price", None)
+        if price and price > 0:
+            return float(price)
+    except Exception:
+        pass
+    # fallback: history
     df = fetch_ohlcv(symbol, lookback_days=5)
     if df.empty:
         return None
