@@ -80,6 +80,10 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
             continue
 
         suffix = _CATEGORY_SUFFIX.get(category, "")
+        # KR/코스닥 종목코드는 6자리 zero-padding 보장
+        # (Excel이 숫자로 파싱하면 005930 → 5930 이 되므로)
+        if suffix in (".KS", ".KQ") and ticker.isdigit():
+            ticker = ticker.zfill(6)
         symbol = ticker + suffix
 
         if symbol not in symbols:          # 중복 제거 (순서 유지)
@@ -136,18 +140,18 @@ def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
         if mime == "application/vnd.google-apps.spreadsheet":
             # Google Sheets → CSV export
             raw = service.files().export(fileId=file_id, mimeType="text/csv").execute()
-            df  = pd.read_csv(io.StringIO(raw.decode("utf-8")), sep=None, engine="python")
+            df  = pd.read_csv(io.StringIO(raw.decode("utf-8")), sep=None, engine="python", dtype=str)
         elif mime in (
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "application/vnd.ms-excel",
         ):
             # 업로드된 Excel (.xlsx / .xls) → 이진 파일로 읽기
             raw = service.files().get_media(fileId=file_id).execute()
-            df  = pd.read_excel(io.BytesIO(raw))
+            df  = pd.read_excel(io.BytesIO(raw), dtype=str)
         else:
             # CSV 또는 텍스트 파일
             raw = service.files().get_media(fileId=file_id).execute()
-            df  = pd.read_csv(io.StringIO(raw.decode("utf-8")), sep=None, engine="python")
+            df  = pd.read_csv(io.StringIO(raw.decode("utf-8")), sep=None, engine="python", dtype=str)
 
         import logging as _log
         _log.getLogger("config").info("Drive 포트폴리오 로드 성공: %d종목 (mime=%s)", len(df), mime)
