@@ -340,9 +340,17 @@ def should_send_trigger_alert(
     if entry is None or entry.get("date") != today:
         return True
 
-    # ② 트리거 종류 변경 (접두어 기준: "SURGE", "VOLUME", "GAP", "STOP_NEAR")
+    # ② 트리거 종류 변경
+    # "SURGE DOWN" / "GAP DOWN" 은 "SURGE UP" / "GAP UP" 과 별개 타입으로 구분
     def _types(tlist: list[str]) -> set[str]:
-        return {t.split()[0] for t in tlist}
+        result = set()
+        for t in tlist:
+            parts = t.split()
+            if len(parts) >= 2 and parts[1] in ("DOWN", "UP"):
+                result.add(f"{parts[0]} {parts[1]}")   # e.g. "SURGE DOWN", "GAP UP"
+            else:
+                result.add(parts[0])                   # e.g. "VOLUME", "STOP"
+        return result
 
     if _types(new_triggers) != _types(entry.get("triggers", [])):
         return True
@@ -353,9 +361,9 @@ def should_send_trigger_alert(
         if abs(new_stop - prev_stop) / prev_stop > 0.005:
             return True
 
-    # ④ 현재가 2% 이상 변동
+    # ④ 현재가 5% 이상 변동 (2%는 장중 잦은 재발송 유발 → 5%로 상향)
     prev_close = entry.get("close", 0.0)
-    if prev_close > 0 and abs(new_close - prev_close) / prev_close > 0.02:
+    if prev_close > 0 and abs(new_close - prev_close) / prev_close > 0.05:
         return True
 
     return False
