@@ -292,6 +292,7 @@ def advance_stage(symbol: str) -> int:
 # {
 #   "AAPL": {
 #     "date":     "2026-02-27",
+#     "sent_at":  "2026-02-27T07:15",   ← 마지막 발송 타임스탬프
 #     "triggers": ["SURGE +5.2%", "VOLUME 320%"],
 #     "close":    185.43,
 #     "stop":     160.0
@@ -299,11 +300,13 @@ def advance_stage(symbol: str) -> int:
 # }
 #
 # 재발송 조건 (아래 중 하나라도 해당):
-#   1) 오늘 발송 이력 없음
+#   1) 마지막 발송 후 120분 이상 경과 (또는 이력 없음)
 #   2) 트리거 종류 변경 (새 트리거 추가 / 기존 제거)
 #   3) Stop 레벨이 0.5% 이상 변동
-#   4) 현재가가 2% 이상 변동
+#   4) 현재가가 5% 이상 변동
 # ─────────────────────────────────────────────────────────────
+
+_TRIGGER_COOLDOWN_MINUTES: int = 120   # 동일 조건 트리거 재발송 최소 간격 (분)
 
 def _load_alert_log() -> dict:
     """alert_log 섹션 로드."""
@@ -336,11 +339,27 @@ def should_send_trigger_alert(
     today = datetime.now().strftime("%Y-%m-%d")
     entry = log.get(symbol)
 
-    # ① 오늘 발송 이력 없음
-    if entry is None or entry.get("date") != today:
+    # ① 발송 이력 없음
+    if entry is None:
         return True
 
-    # ② 트리거 종류 변경
+    # ① 마지막 발송 후 쿨다운(120분) 경과 여부
+    sent_at = entry.get("sent_at")
+    if sent_at:
+        try:
+            elapsed_min = (datetime.now() - datetime.fromisoformat(sent_at)).total_seconds() / 60
+            if elapsed_min >= _TRIGGER_COOLDOWN_MINUTES:
+                return True   # 쿨다운 초과 → 재발송 허용
+        except (ValueError, TypeError):
+            # 파싱 실패 시 날짜 기준으로 fallback
+            if entry.get("date") != today:
+                return True
+    else:
+        # 구버전 alert_log (sent_at 없음) — 날짜 기준 유지
+        if entry.get("date") != today:
+            return True
+
+    # ② 트리거 종류 변경 (쿨다운 내에도 즉각 재발송)
     # "SURGE DOWN" / "GAP DOWN" 은 "SURGE UP" / "GAP UP" 과 별개 타입으로 구분
     def _types(tlist: list[str]) -> set[str]:
         result = set()
@@ -377,8 +396,10 @@ def mark_trigger_sent(
 ) -> None:
     """트리거 알림 발송 기록을 저장합니다."""
     log = _load_alert_log()
+    now = datetime.now()
     log[symbol] = {
-        "date":     datetime.now().strftime("%Y-%m-%d"),
+        "date":     now.strftime("%Y-%m-%d"),
+        "sent_at":  now.isoformat(timespec="minutes"),   # 쿨다운 계산용 타임스탬프
         "triggers": triggers,
         "close":    close,
         "stop":     stop,

@@ -148,4 +148,5 @@ jobs:
           git add data/stop_levels.json
           # 변경 없으면 커밋 건너뜀
           git diff --cached --quiet || git commit -m "chore: update ATR stop levels [skip ci]"
-          git push
+          # push 실패 시 (다른 run이 먼저 push한 경우) rebase 후 재시도
+          git push || (git pull --rebase origin main && git push)
