@@ -281,6 +281,19 @@ def check_immediate_triggers(
     latest = df.iloc[-1]
     prev   = df.iloc[-2]
 
+    # 최신 데이터 freshness 체크
+    # 오늘 날짜 데이터가 아니면 어제 이벤트가 재감지되는 false trigger 방지
+    # (미국 종목 프리마켓 시간, KR 장전 등에서 어제 종가로 트리거 재발생 차단)
+    from datetime import date as _date
+    try:
+        latest_date = (latest.name.date()
+                       if isinstance(latest.name, pd.Timestamp)
+                       else pd.Timestamp(latest.name).date())
+        if latest_date < _date.today():
+            return TriggerResult(symbol=symbol, triggers=triggers)
+    except Exception:
+        pass  # 날짜 파싱 실패 시 체크 생략
+
     # 트리거 1: 당일 급등 +5%
     daily_chg = (latest["Close"] - prev["Close"]) / prev["Close"] * 100
     if daily_chg >= 5.0:
