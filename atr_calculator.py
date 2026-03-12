@@ -346,45 +346,51 @@ def summarize_portfolio_atr(
     columns: Symbol, Market, Close, ATR, ATR%, ATR_Avg20, Spike,
              Multiple, HighestHigh, StopLevel, DistToStop%
     """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
     rows: list[dict] = []
     for symbol, df in ohlcv_map.items():
         if df.empty or len(df) < period + 1:
             continue
 
-        atr_series  = calc_atr(df, period)
-        atr_pct_ser = calc_atr_pct(df, period)
+        try:
+            atr_series  = calc_atr(df, period)
+            atr_pct_ser = calc_atr_pct(df, period)
 
-        latest_close   = df["Close"].iloc[-1]
-        latest_atr     = atr_series.dropna().iloc[-1]  if not atr_series.dropna().empty  else float("nan")
-        latest_atr_pct = atr_pct_ser.dropna().iloc[-1] if not atr_pct_ser.dropna().empty else float("nan")
+            latest_close   = df["Close"].iloc[-1]
+            latest_atr     = atr_series.dropna().iloc[-1]  if not atr_series.dropna().empty  else float("nan")
+            latest_atr_pct = atr_pct_ser.dropna().iloc[-1] if not atr_pct_ser.dropna().empty else float("nan")
 
-        valid_atr  = atr_series.dropna()
-        atr_avg20  = valid_atr.iloc[-ATR_HISTORY_PERIOD:].mean() if len(valid_atr) >= ATR_HISTORY_PERIOD else float("nan")
-        spike_flag = is_atr_spike(atr_series)
+            valid_atr  = atr_series.dropna()
+            atr_avg20  = valid_atr.iloc[-ATR_HISTORY_PERIOD:].mean() if len(valid_atr) >= ATR_HISTORY_PERIOD else float("nan")
+            spike_flag = is_atr_spike(atr_series)
 
-        # Chandelier Exit
-        chandelier = calc_chandelier_stop(symbol, df, period)
-        multiple    = chandelier.multiple       if chandelier else float("nan")
-        hh          = chandelier.highest_high   if chandelier else float("nan")
-        stop_level  = chandelier.stop_level     if chandelier else float("nan")
-        dist_pct    = chandelier.dist_to_stop_pct if chandelier else float("nan")
-        market      = chandelier.market         if chandelier else "?"
+            # Chandelier Exit
+            chandelier = calc_chandelier_stop(symbol, df, period)
+            multiple    = chandelier.multiple       if chandelier else float("nan")
+            hh          = chandelier.highest_high   if chandelier else float("nan")
+            stop_level  = chandelier.stop_level     if chandelier else float("nan")
+            dist_pct    = chandelier.dist_to_stop_pct if chandelier else float("nan")
+            market      = chandelier.market         if chandelier else "?"
 
-        rows.append(
-            {
-                "Symbol":      symbol,
-                "Market":      market,
-                "Close":       round(latest_close,  4),
-                "ATR":         round(latest_atr,     4),
-                "ATR%":        round(latest_atr_pct, 2),
-                "ATR_Avg20":   round(atr_avg20,      4),
-                "Spike":       spike_flag,
-                "Multiple":    multiple,
-                "HighestHigh": round(hh,             4) if not pd.isna(hh) else float("nan"),
-                "StopLevel":   round(stop_level,     4) if not pd.isna(stop_level) else float("nan"),
-                "DistToStop%": round(dist_pct,       2) if not pd.isna(dist_pct) else float("nan"),
-            }
-        )
+            rows.append(
+                {
+                    "Symbol":      symbol,
+                    "Market":      market,
+                    "Close":       round(latest_close,  4),
+                    "ATR":         round(latest_atr,     4) if not pd.isna(latest_atr)     else float("nan"),
+                    "ATR%":        round(latest_atr_pct, 2) if not pd.isna(latest_atr_pct) else float("nan"),
+                    "ATR_Avg20":   round(atr_avg20,      4) if not pd.isna(atr_avg20)      else float("nan"),
+                    "Spike":       spike_flag,
+                    "Multiple":    multiple,
+                    "HighestHigh": round(hh,             4) if not pd.isna(hh) else float("nan"),
+                    "StopLevel":   round(stop_level,     4) if not pd.isna(stop_level) else float("nan"),
+                    "DistToStop%": round(dist_pct,       2) if not pd.isna(dist_pct) else float("nan"),
+                }
+            )
+        except Exception as exc:
+            _logger.warning("ATR 계산 건너뜀 (%s): %s", symbol, exc)
 
     summary = pd.DataFrame(rows)
     if not summary.empty:

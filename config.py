@@ -288,7 +288,11 @@ def fmt_price(symbol: str, price: float) -> str:
 
     .KS/.KQ 심볼 → 57,500원  (정수, 소수점 없음)
     그 외         → $185.43   (달러, 소수점 2자리)
+    NaN/None → "N/A"
     """
+    import math
+    if price is None or (isinstance(price, float) and math.isnan(price)):
+        return "N/A"
     sym_upper = symbol.upper()
     if sym_upper.endswith(".KS") or sym_upper.endswith(".KQ"):
         return f"{int(round(price)):,}원"
