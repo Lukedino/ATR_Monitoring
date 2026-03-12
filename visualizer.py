@@ -115,10 +115,14 @@ def plot_atr_chart(
     atr_pct_ser = calc_atr_pct(df, period)
     chandelier  = calc_chandelier_stop(symbol, df, period)
 
+    # 21일 EMA 시계열
+    ema_series = df["Close"].ewm(span=21, adjust=False).mean()
+
     # 최근 lookback 기간만 표시
     df_plot  = df.iloc[-lookback:]
     atr_plot = atr_series.iloc[-lookback:]
     pct_plot = atr_pct_ser.iloc[-lookback:]
+    ema_plot = ema_series.iloc[-lookback:]
 
     # Chandelier Stop 시계열 (lookback 구간)
     stop_series = _rolling_chandelier_series(symbol, df, period, hh_window=20)
@@ -140,9 +144,21 @@ def plot_atr_chart(
         fontsize=12, fontweight="bold",
     )
 
-    # ── 상단: 종가 + Chandelier Stop ────────────────────────
+    # ── 상단: 종가 + Chandelier Stop + EMA(21) ──────────────
     ax_price = axes[0]
     ax_price.plot(df_plot.index, df_plot["Close"], color="#1f77b4", linewidth=1.5, label="종가", zorder=3)
+
+    # 21 EMA — Stop 이탈 종목은 굵게 강조, 정상 종목은 가늘게 표시
+    _ema_breached = chandelier is not None and chandelier.is_breached
+    ax_price.plot(
+        ema_plot.index, ema_plot,
+        color="#9467bd",
+        linewidth=2.0 if _ema_breached else 1.0,
+        linestyle="-",
+        alpha=0.9 if _ema_breached else 0.5,
+        label=f"EMA(21) {fmt_price(symbol, float(ema_plot.iloc[-1]))}",
+        zorder=2,
+    )
 
     # Chandelier Stop 시계열 (롤링 계산, Trailing 적용)
     if stop_plot is not None and not stop_plot.dropna().empty:

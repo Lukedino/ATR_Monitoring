@@ -406,6 +406,11 @@ def fmt_chandelier_report(chandelier_results: list) -> str:
             f"{near_flag} *{sym_display}*{_account_tag(r.symbol)} ({r.market}·x{r.multiple})\n"
             f"   현재가 {fmt_price(r.symbol, r.current_close)} | Stop {fmt_price(r.symbol, r.stop_level)} | {gap_str} | ATR% {r.atr_pct:.2f}%"
         )
+        # Stop 이탈 종목: 21 EMA를 대체 기준선으로 표시
+        if r.is_breached and r.ema_21 > 0:
+            ema_dist = (r.current_close - r.ema_21) / r.current_close * 100
+            ema_flag = "🔼" if r.current_close >= r.ema_21 else "🔽"
+            line += f"\n   {ema_flag} 21 EMA {fmt_price(r.symbol, r.ema_21)} ({ema_dist:+.1f}%)"
         entry_line = _entry_info_line(r.symbol, r.current_close, r.atr)
         if entry_line:
             line += f"\n   {entry_line}"

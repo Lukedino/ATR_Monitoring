@@ -153,6 +153,7 @@ class ChandelierResult:
     current_close:   float   # 현재 종가
     dist_to_stop_pct: float  # 현재가-Stop 거리 (%)
     market:          str     # 시장 유형 (KR/US/Crypto/ETF)
+    ema_21:          float   = float("nan")  # 21일 EMA (Stop 이탈 시 대체 기준선)
 
     @property
     def is_breached(self) -> bool:
@@ -212,6 +213,9 @@ def calc_chandelier_stop(
     current_close = float(df["Close"].iloc[-1])
     highest_high  = float(df["High"].iloc[-hh_window:].max())
 
+    # 21일 EMA (Stop 이탈 종목의 대체 기준선)
+    ema_21 = float(df["Close"].ewm(span=21, adjust=False).mean().iloc[-1])
+
     # 시장별 + ATR% 구간 보정 배수
     multiple   = get_atr_multiple(symbol, current_pct)
     stop_level = highest_high - current_atr * multiple
@@ -228,6 +232,7 @@ def calc_chandelier_stop(
         current_close    = round(current_close, 4),
         dist_to_stop_pct = round(dist_pct,      2),
         market           = get_market_type(symbol),
+        ema_21           = round(ema_21,         4),
     )
 
 
