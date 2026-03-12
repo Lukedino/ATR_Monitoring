@@ -85,14 +85,27 @@ def _supplement_today_from_fast_info(
         if abs(last_price - last_close) / last_close < 0.001:
             return df
 
-        # getattr default는 속성 부재 시에만 동작 — 속성이 존재하지만 None인 경우는
-        # last_price로 명시적 대체해야 High/Low dtype이 object로 오염되지 않음
+        # KR 종목 일별 ±30% 한도 초과 → 분할/권리락으로 인한 기준 불일치 의심
+        # history(auto_adjust=True)와 fast_info 가격 기준이 달라 TR/ATR 왜곡 + 오알람 발생
+        _is_kr = symbol.upper().endswith((".KS", ".KQ"))
+        if _is_kr:
+            _chg_ratio = abs(last_price - last_close) / last_close
+            if _chg_ratio > 0.31:
+                logger.warning(
+                    "fast_info 보완 건너뜀: %s → 변동 %.1f%% (KR 한도 31%% 초과, 분할/권리락 의심)",
+                    symbol, _chg_ratio * 100,
+                )
+                return df
+
+        # getattr default는 속성 부재 시에만 동작 — 속성이 존재하지만 None인 경우 처리
+        # Open은 None이면 NaN 설정 → GAP 트리거가 SURGE와 동일값으로 중복 발생 방지
+        # High/Low는 None이면 last_price 사용 → TR 계산에 필요한 최소 추정값 유지
         _open     = getattr(fi, "open",        None)
         _day_high = getattr(fi, "day_high",    None)
         _day_low  = getattr(fi, "day_low",     None)
         today_row = pd.DataFrame(
             [{
-                "Open":   float(_open)     if _open     else last_price,
+                "Open":   float(_open)     if _open     else float("nan"),
                 "High":   float(_day_high) if _day_high else last_price,
                 "Low":    float(_day_low)  if _day_low  else last_price,
                 "Close":  last_price,
