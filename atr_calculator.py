@@ -50,6 +50,8 @@ def calc_true_range(df: pd.DataFrame) -> pd.Series:
         axis=1,
     ).max(axis=1)
 
+    # None/object 오염 방지: 모든 값을 numeric으로 강제 변환
+    tr = pd.to_numeric(tr, errors="coerce")
     tr.name = "TR"
     return tr
 

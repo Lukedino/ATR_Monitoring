@@ -85,11 +85,16 @@ def _supplement_today_from_fast_info(
         if abs(last_price - last_close) / last_close < 0.001:
             return df
 
+        # getattr default는 속성 부재 시에만 동작 — 속성이 존재하지만 None인 경우는
+        # last_price로 명시적 대체해야 High/Low dtype이 object로 오염되지 않음
+        _open     = getattr(fi, "open",        None)
+        _day_high = getattr(fi, "day_high",    None)
+        _day_low  = getattr(fi, "day_low",     None)
         today_row = pd.DataFrame(
             [{
-                "Open":   getattr(fi, "open",        last_price),
-                "High":   getattr(fi, "day_high",    last_price),
-                "Low":    getattr(fi, "day_low",     last_price),
+                "Open":   float(_open)     if _open     else last_price,
+                "High":   float(_day_high) if _day_high else last_price,
+                "Low":    float(_day_low)  if _day_low  else last_price,
                 "Close":  last_price,
                 "Volume": int(getattr(fi, "last_volume", 0) or 0),
             }],
