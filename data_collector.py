@@ -60,20 +60,25 @@ def _is_stale(last_date: "datetime.date", today: "datetime.date") -> bool:
     return days_old > 4   # 공휴일 연휴까지 감안하여 4일 초과부터 경고
 
 
-def _supplement_today_from_fast_info(
+def _sync_latest_price_from_fast_info(
     ticker: yf.Ticker,
     symbol: str,
     df: pd.DataFrame,
     today: "datetime.date",
 ) -> pd.DataFrame:
     """
-    yfinance history()에 오늘 데이터가 없을 때 fast_info 실시간 가격으로 보완합니다.
+    fast_info 실시간 가격으로 최신 Close를 항상 동기화합니다.
 
-    보완 조건:
-    - fast_info.last_price 가 존재하고 0보다 클 것
-    - df의 마지막 Close와 0.1% 이상 차이날 것 (같으면 비거래일 = 보완 불필요)
+    기존 _supplement_today_from_fast_info()는 last_date < today 일 때만 실행했지만
+    yfinance가 오늘 날짜 행은 있으나 Close가 전일 값 그대로인 경우(stale data)를
+    처리하지 못해 previous close가 사용되는 문제가 있었습니다.
 
-    장중 호출 시에는 현재가(intraday)가, 장마감 후에는 종가가 주입됩니다.
+    처리 방식:
+    - 0.1% 이내 차이 → 이미 최신, 변경 없음
+    - last_date == today 이지만 Close가 stale → 기존 행 Close/High/Low 업데이트
+    - last_date < today → 오늘 행 신규 추가
+
+    장중에는 현재가(intraday), 장마감 후에는 종가가 적용됩니다.
     """
     try:
         fi = ticker.fast_info
@@ -81,48 +86,61 @@ def _supplement_today_from_fast_info(
         if not last_price or last_price <= 0:
             return df
 
-        last_close = float(df.iloc[-1]["Close"])
-        # 가격 차이 0.1% 이내 → 이미 최신 데이터 포함 (비거래일 등)
-        if abs(last_price - last_close) / last_close < 0.001:
+        last_close = float(df["Close"].iloc[-1])
+        diff_ratio = abs(last_price - last_close) / last_close
+
+        # 0.1% 이내 차이 → 이미 최신 데이터
+        if diff_ratio < 0.001:
             return df
 
-        # KR 종목 일별 ±30% 한도 초과 → 분할/권리락으로 인한 기준 불일치 의심
-        # history(auto_adjust=True)와 fast_info 가격 기준이 달라 TR/ATR 왜곡 + 오알람 발생
+        # KR 종목: 31% 초과 차이 → 분할/권리락 의심, 동기화 건너뜀
         _is_kr = symbol.upper().endswith((".KS", ".KQ"))
-        if _is_kr:
-            _chg_ratio = abs(last_price - last_close) / last_close
-            if _chg_ratio > 0.31:
-                logger.warning(
-                    "fast_info 보완 건너뜀: %s → 변동 %.1f%% (KR 한도 31%% 초과, 분할/권리락 의심)",
-                    symbol, _chg_ratio * 100,
-                )
-                return df
+        if _is_kr and diff_ratio > 0.31:
+            logger.warning(
+                "fast_info 동기화 건너뜀: %s → 변동 %.1f%% (KR 한도 31%% 초과, 분할/권리락 의심)",
+                symbol, diff_ratio * 100,
+            )
+            return df
 
-        # getattr default는 속성 부재 시에만 동작 — 속성이 존재하지만 None인 경우 처리
-        # Open은 None이면 NaN 설정 → GAP 트리거가 SURGE와 동일값으로 중복 발생 방지
-        # High/Low는 None이면 last_price 사용 → TR 계산에 필요한 최소 추정값 유지
-        _open     = getattr(fi, "open",        None)
-        _day_high = getattr(fi, "day_high",    None)
-        _day_low  = getattr(fi, "day_low",     None)
-        today_row = pd.DataFrame(
-            [{
-                "Open":   float(_open)     if _open     else float("nan"),
-                "High":   float(_day_high) if _day_high else last_price,
-                "Low":    float(_day_low)  if _day_low  else last_price,
-                "Close":  last_price,
-                "Volume": int(getattr(fi, "last_volume", 0) or 0),
-            }],
-            index=[pd.Timestamp(today)],
-        )
-        today_row.index.name = "Date"
-        df = pd.concat([df, today_row])
-        logger.info(
-            "fast_info 보완: %s → 오늘 Close %.4f 주입 (history 지연 감지)",
-            symbol, last_price,
-        )
+        _day_high = getattr(fi, "day_high", None)
+        _day_low  = getattr(fi, "day_low",  None)
+        last_date = df.index[-1].date()
+
+        if last_date == today:
+            # 오늘 행이 있지만 Close가 stale → 기존 행 업데이트
+            df = df.copy()
+            df.loc[df.index[-1], "Close"] = last_price
+            if _day_high:
+                df.loc[df.index[-1], "High"] = max(float(_day_high), float(df.loc[df.index[-1], "High"]))
+            if _day_low:
+                df.loc[df.index[-1], "Low"]  = min(float(_day_low),  float(df.loc[df.index[-1], "Low"]))
+            logger.info(
+                "fast_info 동기화: %s Close %.4f → %.4f (오늘 행 업데이트)",
+                symbol, last_close, last_price,
+            )
+        else:
+            # 오늘 행 없음 → 신규 추가
+            # Open은 None이면 NaN — GAP 트리거가 SURGE와 동일값으로 중복 발생 방지
+            _open = getattr(fi, "open", None)
+            today_row = pd.DataFrame(
+                [{
+                    "Open":   float(_open)     if _open     else float("nan"),
+                    "High":   float(_day_high) if _day_high else last_price,
+                    "Low":    float(_day_low)  if _day_low  else last_price,
+                    "Close":  last_price,
+                    "Volume": int(getattr(fi, "last_volume", 0) or 0),
+                }],
+                index=[pd.Timestamp(today)],
+            )
+            today_row.index.name = "Date"
+            df = pd.concat([df, today_row])
+            logger.info(
+                "fast_info 동기화: %s → 오늘 Close %.4f 주입 (history 지연 감지)",
+                symbol, last_price,
+            )
 
     except Exception as exc:
-        logger.warning("fast_info 보완 실패 (%s): %s", symbol, exc)
+        logger.warning("fast_info 동기화 실패 (%s): %s", symbol, exc)
 
     return df
 
@@ -178,20 +196,18 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
         if df.empty:
             return pd.DataFrame()
 
-        # 최신성 확인 및 fast_info 보완
+        # fast_info로 최신 Close 항상 동기화
+        # (오늘 행이 있어도 stale close인 경우 + 오늘 행이 없는 경우 모두 처리)
         today = datetime.today().date()
-        last_date = df.index[-1].date()
+        df = _sync_latest_price_from_fast_info(ticker, symbol, df, today)
 
-        if last_date < today:
-            # 거래일 지연: fast_info 실시간 가격으로 오늘 행 보완 시도
-            df = _supplement_today_from_fast_info(ticker, symbol, df, today)
-            # 보완 후에도 stale하면 경고
-            last_date_after = df.index[-1].date()
-            if _is_stale(last_date_after, today):
-                logger.warning(
-                    "오래된 데이터 감지: %s → 마지막 날짜 %s (%d일 전) — 거래 정지/Yahoo 지연 가능성",
-                    symbol, last_date_after, (today - last_date_after).days,
-                )
+        # 보완 후에도 stale하면 경고
+        last_date_after = df.index[-1].date()
+        if _is_stale(last_date_after, today):
+            logger.warning(
+                "오래된 데이터 감지: %s → 마지막 날짜 %s (%d일 전) — 거래 정지/Yahoo 지연 가능성",
+                symbol, last_date_after, (today - last_date_after).days,
+            )
 
         return df
 
