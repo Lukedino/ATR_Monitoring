@@ -48,104 +48,6 @@ def _strip_timezone(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _fetch_kq_unadjusted(
-    ticker: yf.Ticker,
-    symbol: str,
-    lookback_days: int,
-) -> pd.DataFrame:
-    """
-    .KQ 종목의 auto_adjust=False 재조회 결과를 반환합니다.
-
-    Yahoo Finance KOSDAQ 배당/분할 조정 데이터가 부정확할 경우
-    auto_adjust=True가 전체 가격을 왜곡합니다.
-    auto_adjust=False + Adj Close 수동 적용으로 대체합니다.
-    """
-    start, end = _build_date_range(lookback_days)
-    try:
-        df = ticker.history(start=start, end=end, auto_adjust=False)
-        if df.empty:
-            return pd.DataFrame()
-
-        df.columns = [c.strip().capitalize() for c in df.columns]
-        df.index.name = "Date"
-        df = _strip_timezone(df)
-
-        # auto_adjust=False 시 "Adj close" 컬럼 생성 — 배당 반영 종가로 Close 교체
-        adj_col = next(
-            (c for c in df.columns if c.lower().replace(" ", "") == "adjclose"),
-            None,
-        )
-        if adj_col:
-            df["Close"] = df[adj_col]
-
-        required = ["Open", "High", "Low", "Close", "Volume"]
-        if any(c not in df.columns for c in required):
-            return pd.DataFrame()
-        return df[required].dropna(subset=["Close"])
-
-    except Exception as exc:
-        logger.debug("KQ unadjusted 재조회 실패 (%s): %s", symbol, exc)
-        return pd.DataFrame()
-
-
-def _validate_kq_price(
-    ticker: yf.Ticker,
-    symbol: str,
-    df: pd.DataFrame,
-    lookback_days: int,
-) -> pd.DataFrame:
-    """
-    .KQ 종목의 history() 가격이 fast_info 현재가와 크게 다를 경우
-    auto_adjust=False로 재조회하여 더 정확한 데이터를 반환합니다.
-
-    감지 기준:
-    - fast_info.last_price와 history 마지막 Close의 차이 > 20%
-    - 주말/공휴일 최대 5일 + KR 일일 변동폭(±30%) 고려 → 임계값 50%
-      (50% 초과 시에만 조정 왜곡으로 판단 — 정상 급등락과 구분)
-
-    50% 임계값 근거:
-      KR 일일 ±30% × 최대 2거래일 격차 = 최대 69% 이론상 가능하지만,
-      실제로는 이 정도 연속 급등락은 거의 없음.
-      따라서 50% 초과 = auto_adjust 왜곡으로 판단.
-    """
-    try:
-        fi = ticker.fast_info
-        fi_price = getattr(fi, "last_price", None)
-        if not fi_price or fi_price <= 0:
-            return df
-
-        last_close = float(df["Close"].iloc[-1])
-        ratio = abs(fi_price - last_close) / last_close
-
-        if ratio <= 0.50:
-            return df   # 50% 이내 차이 → 정상 (당일 등락 + 주말 포함)
-
-        # 50% 초과 → auto_adjust 왜곡 의심, auto_adjust=False로 재시도
-        df_raw = _fetch_kq_unadjusted(ticker, symbol, lookback_days)
-        if df_raw.empty:
-            return df
-
-        last_close_raw = float(df_raw["Close"].iloc[-1])
-        ratio_raw = abs(fi_price - last_close_raw) / last_close_raw
-
-        if ratio_raw < ratio:
-            logger.warning(
-                "KQ auto_adjust 왜곡 감지: %s → unadjusted 사용 "
-                "(fast_info 대비 %.1f%% → %.1f%%)",
-                symbol, ratio * 100, ratio_raw * 100,
-            )
-            return df_raw
-
-        # unadjusted도 개선 안 되면 원본 유지 (분할/권리락 당일 등 예외)
-        logger.debug(
-            "KQ 가격 검증: %s unadjusted도 fast_info 대비 %.1f%% — 원본 유지",
-            symbol, ratio_raw * 100,
-        )
-    except Exception as exc:
-        logger.debug("KQ 가격 검증 실패 (%s): %s", symbol, exc)
-
-    return df
-
 
 def _is_stale(last_date: "datetime.date", today: "datetime.date") -> bool:
     """
@@ -238,11 +140,18 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
     -------
     columns: Date(index, timezone-naive), Open, High, Low, Close, Volume
     실패 시 빈 DataFrame 반환
+
+    .KQ 전용 처리:
+    Yahoo Finance KOSDAQ 조정 데이터는 신뢰도가 낮아 auto_adjust=True 시
+    전체 가격이 왜곡될 수 있습니다. .KQ 종목은 auto_adjust=False로 조회하고
+    Adj Close 컬럼을 Close로 수동 교체하여 왜곡을 원천 차단합니다.
     """
     start, end = _build_date_range(lookback_days)
+    _is_kq = symbol.upper().endswith(".KQ")
     try:
         ticker = yf.Ticker(symbol)
-        df = ticker.history(start=start, end=end, auto_adjust=True)
+        # .KQ: auto_adjust=False 로 왜곡 원천 차단
+        df = ticker.history(start=start, end=end, auto_adjust=not _is_kq)
 
         if df.empty:
             logger.warning("데이터 없음: %s", symbol)
@@ -256,6 +165,19 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
         # (tz_convert(None)은 UTC 변환으로 날짜가 밀리므로 replace 방식 사용)
         df = _strip_timezone(df)
 
+        # .KQ: auto_adjust=False 시 "Adj Close" 컬럼이 별도 생성됨
+        # → 배당/분할 반영된 Adj Close를 Close로 교체 (정상 조정 데이터 활용)
+        if _is_kq:
+            adj_col = next(
+                (c for c in df.columns if c.lower().replace(" ", "") == "adjclose"),
+                None,
+            )
+            if adj_col:
+                df["Close"] = df[adj_col]
+                logger.debug("KQ Adj Close 적용: %s ← %s", symbol, adj_col)
+            else:
+                logger.debug("KQ Adj Close 컬럼 없음: %s — Close 그대로 사용", symbol)
+
         # 필요한 컬럼만 유지
         required = ["Open", "High", "Low", "Close", "Volume"]
         missing = [c for c in required if c not in df.columns]
@@ -268,10 +190,6 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
 
         if df.empty:
             return pd.DataFrame()
-
-        # .KQ 전용: auto_adjust 왜곡 검증 (KOSDAQ Yahoo 조정 데이터 불신뢰성 대응)
-        if symbol.upper().endswith(".KQ"):
-            df = _validate_kq_price(ticker, symbol, df, lookback_days)
 
         # 최신성 확인 및 fast_info 보완
         today = datetime.today().date()
