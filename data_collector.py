@@ -165,11 +165,34 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
     원시 Close(거래소 실제 종가)를 그대로 사용합니다.
     """
     start, end = _build_date_range(lookback_days)
-    _is_kq = symbol.upper().endswith(".KQ")
+    _sym_upper = symbol.upper()
+    _is_kq     = _sym_upper.endswith(".KQ")
+    _is_kr     = _sym_upper.endswith(".KS") or _is_kq
     try:
         ticker = yf.Ticker(symbol)
         # .KQ: auto_adjust=False 로 왜곡 원천 차단
         df = ticker.history(start=start, end=end, auto_adjust=not _is_kq)
+
+        # KR 종목 suffix 자동 교정
+        # 한국 6자리 코드는 KOSPI/KOSDAQ 전체에서 유일하므로
+        # 데이터 없으면 반대 suffix (.KS ↔ .KQ)로 재시도해 포트폴리오 입력 오류 보완
+        if df.empty and _is_kr:
+            if _sym_upper.endswith(".KS"):
+                alt_symbol = symbol[:-3] + ".KQ"
+                alt_is_kq  = True
+            else:
+                alt_symbol = symbol[:-3] + ".KS"
+                alt_is_kq  = False
+            alt_ticker = yf.Ticker(alt_symbol)
+            alt_df = alt_ticker.history(start=start, end=end, auto_adjust=not alt_is_kq)
+            if not alt_df.empty:
+                logger.warning(
+                    "KR suffix 자동 교정: %s → %s 로 데이터 수신 (포트폴리오 구분 컬럼 확인 필요)",
+                    symbol, alt_symbol,
+                )
+                ticker  = alt_ticker
+                df      = alt_df
+                _is_kq  = alt_is_kq
 
         if df.empty:
             logger.warning("데이터 없음: %s", symbol)
