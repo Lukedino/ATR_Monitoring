@@ -143,8 +143,8 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
 
     .KQ 전용 처리:
     Yahoo Finance KOSDAQ 조정 데이터는 신뢰도가 낮아 auto_adjust=True 시
-    전체 가격이 왜곡될 수 있습니다. .KQ 종목은 auto_adjust=False로 조회하고
-    Adj Close 컬럼을 Close로 수동 교체하여 왜곡을 원천 차단합니다.
+    전체 가격이 왜곡될 수 있습니다. .KQ 종목은 auto_adjust=False로 조회하여
+    원시 Close(거래소 실제 종가)를 그대로 사용합니다.
     """
     start, end = _build_date_range(lookback_days)
     _is_kq = symbol.upper().endswith(".KQ")
@@ -164,19 +164,6 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
         # 타임존 제거: 시장 로컬 날짜 기준으로 naive index 변환
         # (tz_convert(None)은 UTC 변환으로 날짜가 밀리므로 replace 방식 사용)
         df = _strip_timezone(df)
-
-        # .KQ: auto_adjust=False 시 "Adj Close" 컬럼이 별도 생성됨
-        # → 배당/분할 반영된 Adj Close를 Close로 교체 (정상 조정 데이터 활용)
-        if _is_kq:
-            adj_col = next(
-                (c for c in df.columns if c.lower().replace(" ", "") == "adjclose"),
-                None,
-            )
-            if adj_col:
-                df["Close"] = df[adj_col]
-                logger.debug("KQ Adj Close 적용: %s ← %s", symbol, adj_col)
-            else:
-                logger.debug("KQ Adj Close 컬럼 없음: %s — Close 그대로 사용", symbol)
 
         # 필요한 컬럼만 유지
         required = ["Open", "High", "Low", "Close", "Volume"]
