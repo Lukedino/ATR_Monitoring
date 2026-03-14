@@ -292,7 +292,7 @@ def advance_stage(symbol: str) -> int:
 # {
 #   "AAPL": {
 #     "date":     "2026-02-27",
-#     "sent_at":  "2026-02-27T07:15",   ← 마지막 발송 타임스탬프
+#     "sent_at":  "2026-02-27T07:15",   ← 마지막 발송 타임스탬프 (기록용)
 #     "triggers": ["SURGE +5.2%", "VOLUME 320%"],
 #     "close":    185.43,
 #     "stop":     160.0
@@ -300,13 +300,15 @@ def advance_stage(symbol: str) -> int:
 # }
 #
 # 재발송 조건 (아래 중 하나라도 해당):
-#   1) 마지막 발송 후 120분 이상 경과 (또는 이력 없음)
+#   1) 발송 이력 없음, 또는 새 거래일 시작 (date 변경)
 #   2) 트리거 종류 변경 (새 트리거 추가 / 기존 제거)
 #   3) Stop 레벨이 0.5% 이상 변동
 #   4) 현재가가 5% 이상 변동
+#
+# ※ 시간 기반 쿨다운(120분) 제거 — 동일 가격/조건이면 시장 마감 후 재발송 안 함
+#   KR/US 장 마감 후에는 가격 변동 없으므로 조건 2~4가 충족되지 않아 자연 억제됨
+#   시장 활성 여부 게이트는 monitor.py 의 _is_market_active_for_triggers() 가 담당
 # ─────────────────────────────────────────────────────────────
-
-_TRIGGER_COOLDOWN_MINUTES: int = 120   # 동일 조건 트리거 재발송 최소 간격 (분)
 
 def _load_alert_log() -> dict:
     """alert_log 섹션 로드."""
@@ -330,10 +332,13 @@ def should_send_trigger_alert(
     """
     트리거 알림 발송 여부를 판단합니다.
 
+    시간 기반 쿨다운 없이 콘텐츠 기반으로만 판단합니다.
+    KR/US 장 마감 후 동일 가격/조건이면 재발송하지 않습니다.
+
     Returns
     -------
     True  → 발송 필요
-    False → 오늘 이미 동일 조건으로 발송됨 (스킵)
+    False → 동일 조건 발송됨 (스킵)
     """
     log   = _load_alert_log()
     today = datetime.now().strftime("%Y-%m-%d")
@@ -343,23 +348,11 @@ def should_send_trigger_alert(
     if entry is None:
         return True
 
-    # ① 마지막 발송 후 쿨다운(120분) 경과 여부
-    sent_at = entry.get("sent_at")
-    if sent_at:
-        try:
-            elapsed_min = (datetime.now() - datetime.fromisoformat(sent_at)).total_seconds() / 60
-            if elapsed_min >= _TRIGGER_COOLDOWN_MINUTES:
-                return True   # 쿨다운 초과 → 재발송 허용
-        except (ValueError, TypeError):
-            # 파싱 실패 시 날짜 기준으로 fallback
-            if entry.get("date") != today:
-                return True
-    else:
-        # 구버전 alert_log (sent_at 없음) — 날짜 기준 유지
-        if entry.get("date") != today:
-            return True
+    # ① 새 거래일 시작 → 이전 알람 로그 초기화 (날짜 변경 시 재발송 허용)
+    if entry.get("date") != today:
+        return True
 
-    # ② 트리거 종류 변경 (쿨다운 내에도 즉각 재발송)
+    # ② 트리거 종류 변경
     # "SURGE DOWN" / "GAP DOWN" 은 "SURGE UP" / "GAP UP" 과 별개 타입으로 구분
     def _types(tlist: list[str]) -> set[str]:
         result = set()
@@ -380,7 +373,7 @@ def should_send_trigger_alert(
         if abs(new_stop - prev_stop) / prev_stop > 0.005:
             return True
 
-    # ④ 현재가 5% 이상 변동 (2%는 장중 잦은 재발송 유발 → 5%로 상향)
+    # ④ 현재가 5% 이상 변동
     prev_close = entry.get("close", 0.0)
     if prev_close > 0 and abs(new_close - prev_close) / prev_close > 0.05:
         return True

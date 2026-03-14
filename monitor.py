@@ -80,6 +80,52 @@ IS_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS", "").lower() == "true"
 
 
 # ─────────────────────────────────────────────────────────────
+# 시장 활성 시간 게이트
+# ─────────────────────────────────────────────────────────────
+
+def _is_market_active_for_triggers(symbol: str) -> bool:
+    """
+    해당 종목의 시장이 현재 트리거 알람을 발송할 수 있는 활성 시간대인지 반환합니다.
+
+    시장별 활성 구간 (UTC 기준):
+      KR     : 평일 UTC 23:00(전일)~09:00  ← KST 08:00(프리)~18:00(애프터 종료)
+               일요일 UTC 23:00~24:00      ← 월요일 KR 프리마켓 시작
+      US/ETF : 평일 UTC 09:00~01:00+1      ← ET 04:00(프리)~20:00(애프터 종료)
+               토요일 UTC 00:00~01:00      ← 금요일 US 애프터마켓 마감 직후 커버
+      Crypto : 항상 True (24/7)
+
+    장 마감 후에는 가격이 동결되므로 콘텐츠 기반 중복 체크도 스킵을 보장하지만,
+    이 게이트가 추가 방어선으로 작동하여 불필요한 계산을 차단합니다.
+    """
+    from datetime import datetime, timezone
+    from config import get_market_type
+
+    market = get_market_type(symbol)
+    if market == "Crypto":
+        return True
+
+    now_utc = datetime.now(timezone.utc)
+    weekday = now_utc.weekday()   # 0=월 … 4=금, 5=토, 6=일
+    h       = now_utc.hour
+
+    if market == "KR":
+        if weekday == 5:           # 토: 종일 비활성
+            return False
+        if weekday == 6:           # 일: UTC 23시부터 KR 프리마켓 시작 (KST 월 08:00)
+            return h >= 23
+        # 평일: UTC 09:00~22:59 → KR 장 마감 구간 (KST 18:00~07:59)
+        return not (9 <= h < 23)
+
+    # US / ETF
+    if weekday == 6:               # 일: 종일 비활성
+        return False
+    if weekday == 5:               # 토: UTC 01:00 이전만 US 애프터마켓 활성
+        return h < 1
+    # 평일: UTC 01:00~08:59 → KR·US 양쪽 모두 종료된 비활성 구간
+    return not (1 <= h < 9)
+
+
+# ─────────────────────────────────────────────────────────────
 # 핵심 작업 함수
 # ─────────────────────────────────────────────────────────────
 
@@ -116,15 +162,18 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
         current_stop = rec.current_stop if rec else None
         trigger      = check_immediate_triggers(symbol, df, current_stop)
         if trigger.has_trigger:
-            close = float(df["Close"].iloc[-1])
-            if should_send_trigger_alert(symbol, trigger.triggers, close, current_stop):
-                tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop))
-                chart = plot_atr_chart(symbol, df, registered_stop=current_stop, as_bytes=True)
-                tg.send_photo(chart, caption=f"긴급: {fmt_symbol(symbol)} 트리거 감지")
-                mark_trigger_sent(symbol, trigger.triggers, close, current_stop)
-                logger.warning("트리거 감지 알림: %s — %s", symbol, trigger.triggers)
+            if not _is_market_active_for_triggers(symbol):
+                logger.debug("트리거 스킵 (장 마감): %s — %s", symbol, trigger.triggers)
             else:
-                logger.info("트리거 중복 스킵: %s (당일 동일 조건 발송됨)", symbol)
+                close = float(df["Close"].iloc[-1])
+                if should_send_trigger_alert(symbol, trigger.triggers, close, current_stop):
+                    tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop))
+                    chart = plot_atr_chart(symbol, df, registered_stop=current_stop, as_bytes=True)
+                    tg.send_photo(chart, caption=f"긴급: {fmt_symbol(symbol)} 트리거 감지")
+                    mark_trigger_sent(symbol, trigger.triggers, close, current_stop)
+                    logger.warning("트리거 감지 알림: %s — %s", symbol, trigger.triggers)
+                else:
+                    logger.info("트리거 중복 스킵: %s (동일 조건 발송됨)", symbol)
 
         # Stop 갱신 (등록된 포지션만)
         if rec is None:
@@ -266,6 +315,9 @@ def job_trigger_check() -> None:
         current_stop = rec.current_stop if rec else None
         trigger      = check_immediate_triggers(symbol, df, current_stop)
         if trigger.has_trigger:
+            if not _is_market_active_for_triggers(symbol):
+                logger.debug("트리거 스킵 (장 마감): %s — %s", symbol, trigger.triggers)
+                continue
             close = float(df["Close"].iloc[-1])
             if should_send_trigger_alert(symbol, trigger.triggers, close, current_stop):
                 found = True
@@ -274,7 +326,7 @@ def job_trigger_check() -> None:
                 tg.send_photo(chart, caption=f"긴급: {fmt_symbol(symbol)}")
                 mark_trigger_sent(symbol, trigger.triggers, close, current_stop)
             else:
-                logger.info("트리거 중복 스킵: %s (당일 동일 조건 발송됨)", symbol)
+                logger.info("트리거 중복 스킵: %s (동일 조건 발송됨)", symbol)
 
     if not found:
         logger.info("트리거 없음")
