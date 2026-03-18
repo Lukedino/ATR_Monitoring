@@ -301,8 +301,24 @@ def check_immediate_triggers(
     except Exception:
         pass  # 날짜 파싱 실패 시 체크 생략
 
+    # prev["Close"] 유효성 검증: 0이면 daily_chg 계산 불가 → 데이터 오류
+    if prev["Close"] <= 0:
+        logger.warning("%s: prev Close=%.4f 비정상값 → 트리거 체크 건너뜀", symbol, prev["Close"])
+        return TriggerResult(symbol=symbol, triggers=triggers)
+
     # 트리거 1: 당일 급등 +5%
     daily_chg = (latest["Close"] - prev["Close"]) / prev["Close"] * 100
+
+    # KR 가격제한폭 검증: ±30% 초과는 데이터 오류 (야후 조정 왜곡 등)
+    # 실제 거래는 ±30% 이내이므로 이를 벗어나면 오발령 차단
+    _is_kr_sym = symbol.upper().endswith((".KS", ".KQ"))
+    if _is_kr_sym and abs(daily_chg) > 32.0:
+        logger.warning(
+            "%s: daily_chg=%.1f%% — KR 가격제한폭(±30%%) 초과, 데이터 오류로 판단하여 트리거 건너뜀",
+            symbol, daily_chg,
+        )
+        return TriggerResult(symbol=symbol, triggers=triggers)
+
     if daily_chg >= 5.0:
         triggers.append(f"SURGE +{daily_chg:.1f}% (Highest High 갱신)")
 
