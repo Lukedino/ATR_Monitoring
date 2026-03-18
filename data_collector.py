@@ -162,10 +162,13 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
     columns: Date(index, timezone-naive), Open, High, Low, Close, Volume
     실패 시 빈 DataFrame 반환
 
-    KR 전용 처리 (.KS/.KQ 공통):
-    Yahoo Finance 한국 주식 조정 데이터는 KOSPI/KOSDAQ 모두 신뢰도가 낮아
-    auto_adjust=True 시 전체 가격 계열이 왜곡될 수 있습니다.
-    .KS/.KQ 모두 auto_adjust=False로 조회하여 거래소 실제 종가를 사용합니다.
+    시장별 auto_adjust 처리:
+    - .KQ (KOSDAQ): auto_adjust=False — Yahoo의 KOSDAQ 보정 데이터가 비신뢰,
+                    거래소 원시 종가 사용으로 가격 왜곡 차단
+    - .KS (KOSPI) : auto_adjust=True  — Yahoo의 KOSPI 보정은 비교적 신뢰도 높음.
+                    배당·권리락 등 기업 이벤트를 소급 반영하여 연속 가격 계열 유지.
+                    (False로 바꾸면 권리락일 비교 시 phantom 급락 트리거 오발령)
+    - non-KR      : auto_adjust=True  — 배당 제거된 연속 가격 계열 사용
     """
     start, end = _build_date_range(lookback_days)
     _sym_upper = symbol.upper()
@@ -173,9 +176,9 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
     _is_kr     = _sym_upper.endswith(".KS") or _is_kq
     try:
         ticker = yf.Ticker(symbol)
-        # KR 전체(.KS/.KQ): auto_adjust=False — Yahoo Finance 조정 왜곡 원천 차단
-        # non-KR: auto_adjust=True (배당 제거된 연속 가격 계열 사용)
-        df = ticker.history(start=start, end=end, auto_adjust=not _is_kr)
+        # .KQ만 auto_adjust=False (KOSDAQ 보정 왜곡 차단)
+        # .KS 및 non-KR은 auto_adjust=True (권리락·배당 소급 반영)
+        df = ticker.history(start=start, end=end, auto_adjust=not _is_kq)
 
         # KR 종목 suffix 자동 교정
         # 한국 6자리 코드는 KOSPI/KOSDAQ 전체에서 유일하므로
@@ -183,11 +186,13 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
         if df.empty and _is_kr:
             if _sym_upper.endswith(".KS"):
                 alt_symbol = symbol[:-3] + ".KQ"
+                alt_is_kq  = True
             else:
                 alt_symbol = symbol[:-3] + ".KS"
+                alt_is_kq  = False
             alt_ticker = yf.Ticker(alt_symbol)
-            # 자동 교정 후 종목도 KR → auto_adjust=False 유지
-            alt_df = alt_ticker.history(start=start, end=end, auto_adjust=False)
+            # 교정 후 종목도 각 시장에 맞는 auto_adjust 적용 (.KQ는 False, .KS는 True)
+            alt_df = alt_ticker.history(start=start, end=end, auto_adjust=not alt_is_kq)
             if not alt_df.empty:
                 logger.warning(
                     "KR suffix 자동 교정: %s → %s 로 데이터 수신 (포트폴리오 구분 컬럼 확인 필요)",
@@ -195,7 +200,7 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
                 )
                 ticker  = alt_ticker
                 df      = alt_df
-                _is_kq  = alt_symbol.upper().endswith(".KQ")
+                _is_kq  = alt_is_kq
 
         if df.empty:
             logger.warning("데이터 없음: %s", symbol)
