@@ -234,6 +234,39 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
         if df.empty:
             return pd.DataFrame()
 
+        # ──────────────────────────────────────────────────────────
+        # .KS 전용: auto_adjust=True 왜곡 감지 → auto_adjust=False 폴백
+        #
+        # 일부 KOSPI 종목은 Yahoo의 조정 팩터가 비신뢰:
+        #   auto_adjust=True 역사 종가가 왜곡되어 fast_info 현재가와 31%+ 괴리 발생
+        # → 해당 종목은 auto_adjust=False 재조회로 원시 종가 사용
+        #
+        # 일반 배당·권리락이 정상적으로 반영된 종목:
+        #   auto_adjust=True 역사가 ≈ fast_info → 괴리 없음 → 재조회 불필요
+        # ──────────────────────────────────────────────────────────
+        _is_ks = _is_kr and not _is_kq   # .KS (KOSPI) 전용
+        if _is_ks and not df.empty:
+            try:
+                _fp = getattr(ticker.fast_info, "last_price", None)
+                _lc = float(df["Close"].iloc[-1])
+                if _fp and _fp > 0 and _lc > 0 and abs(_fp - _lc) / _lc > 0.31:
+                    _df_raw = ticker.history(start=start, end=end, auto_adjust=False)
+                    if not _df_raw.empty:
+                        _df_raw.columns = [c.strip().capitalize() for c in _df_raw.columns]
+                        _df_raw = _strip_timezone(_df_raw)
+                        _df_raw = _df_raw[[c for c in required if c in _df_raw.columns]]
+                        _df_raw = _df_raw.dropna(subset=["Close"])
+                        _df_raw = _df_raw[_df_raw["Close"] > 0]
+                        if not _df_raw.empty:
+                            logger.warning(
+                                "%s: auto_adjust=True 왜곡 감지 (±%.1f%%) → "
+                                "auto_adjust=False 원시 데이터로 대체",
+                                symbol, abs(_fp - _lc) / _lc * 100,
+                            )
+                            df = _df_raw
+            except Exception as _exc:
+                logger.debug("%s: auto_adjust 품질 검증 실패: %s", symbol, _exc)
+
         # fast_info로 최신 Close 항상 동기화
         # (오늘 행이 있어도 stale close인 경우 + 오늘 행이 없는 경우 모두 처리)
         today = datetime.today().date()
