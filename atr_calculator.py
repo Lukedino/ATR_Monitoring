@@ -329,9 +329,17 @@ def check_immediate_triggers(
         if vol_ratio >= 300:
             triggers.append(f"VOLUME x{vol_ratio/100:.1f} (평균 대비 {vol_ratio:.0f}%)")
 
-    # 트리거 3: 갭 상승 +3%
-    gap_pct = (latest["Open"] - prev["Close"]) / prev["Close"] * 100
-    if gap_pct >= 3.0:
+    # 트리거 3 & 6: 갭 상승/하락
+    # Open=0 또는 NaN이면 갭 계산 불가 (장 개시 전 부분 데이터 방어)
+    # KR 장 개장 전(UTC 23시대) yfinance가 Open=0인 부분 행을 반환하여
+    # gap_pct = (0 - prev_close) / prev_close = -100% 오발령이 발생하므로 명시적으로 차단
+    _open_val = latest["Open"]
+    _open_valid = pd.notna(_open_val) and float(_open_val) > 0
+    gap_pct = float("nan")
+    if _open_valid:
+        gap_pct = (float(_open_val) - float(prev["Close"])) / float(prev["Close"]) * 100
+
+    if _open_valid and gap_pct >= 3.0:
         triggers.append(f"GAP UP +{gap_pct:.1f}%")
 
     # 트리거 4: 현재가 Stop 5% 이내
@@ -345,7 +353,7 @@ def check_immediate_triggers(
         triggers.append(f"SURGE DOWN {daily_chg:.1f}% (손실 확대 경보)")
 
     # 트리거 6: 갭 하락 -3%
-    if gap_pct <= -3.0:
+    if _open_valid and gap_pct <= -3.0:
         triggers.append(f"GAP DOWN {gap_pct:.1f}% (Stop 즉시 이탈 위험)")
 
     return TriggerResult(symbol=symbol, triggers=triggers)

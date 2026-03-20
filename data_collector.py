@@ -234,6 +234,17 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
         if df.empty:
             return pd.DataFrame()
 
+        # Open/High/Low=0 → NaN 정리
+        # 원인: KR 장 개장 전(UTC 23시대) yfinance가 KST 다음날 부분 행을 반환하며
+        #       Open/High/Low=0, Close=전일 종가 형태로 반환 → GAP DOWN -100% 오발령
+        # Close는 이미 위에서 필터했으므로 나머지 OHLC만 처리
+        df = df.copy()
+        for _col in ("Open", "High", "Low"):
+            _zero = df[_col] <= 0
+            if _zero.any():
+                logger.debug("%s: %s=0 행 %d개 → NaN 처리 (장 개시 전 부분 데이터)", symbol, _col, _zero.sum())
+                df.loc[_zero, _col] = float("nan")
+
         # ──────────────────────────────────────────────────────────
         # .KS 전용: auto_adjust=True 왜곡 감지 → auto_adjust=False 폴백
         #
