@@ -15,9 +15,49 @@ from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
 
+import requests
+
 from config import LOOKBACK_DAYS
 
 logger = logging.getLogger(__name__)
+
+
+def _fetch_naver_kr_price(code6: str) -> float | None:
+    """
+    네이버 금융 모바일 API로 국내 종목 현재가를 조회합니다.
+
+    Yahoo Finance fast_info 가격이 캐싱/오류로 잘못된 경우 교차 검증 소스로 사용.
+    예: 일지테크(019540) → Yahoo fast_info=4,980 / Naver=6,160 → Naver 가격 사용
+
+    Parameters
+    ----------
+    code6 : 6자리 종목코드 (예: "019540")
+
+    Returns
+    -------
+    현재가 (float) 또는 None (조회 실패 / 장 마감 후 무거래 상태)
+    """
+    try:
+        url = f"https://m.stock.naver.com/api/stock/{code6}/basic"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer":    "https://m.stock.naver.com/",
+            "Accept":     "application/json",
+        }
+        resp = requests.get(url, headers=headers, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        # 장중/장마감 공통: closePrice → stockPrice 순으로 시도
+        for field in ("closePrice", "stockPrice"):
+            raw = data.get(field, "")
+            if raw:
+                price = float(str(raw).replace(",", ""))
+                if price > 0:
+                    return price
+        return None
+    except Exception as exc:
+        logger.debug("네이버 가격 조회 실패 (%s): %s", code6, exc)
+        return None
 
 
 def _build_date_range(lookback_days: int) -> tuple[str, str]:
@@ -67,18 +107,17 @@ def _sync_latest_price_from_fast_info(
     today: "datetime.date",
 ) -> pd.DataFrame:
     """
-    fast_info 실시간 가격으로 최신 Close를 항상 동기화합니다.
+    fast_info 실시간 가격으로 최신 Close를 동기화합니다.
 
-    기존 _supplement_today_from_fast_info()는 last_date < today 일 때만 실행했지만
-    yfinance가 오늘 날짜 행은 있으나 Close가 전일 값 그대로인 경우(stale data)를
-    처리하지 못해 previous close가 사용되는 문제가 있었습니다.
+    KR 종목 history 지연 시 처리:
+    - fast_info.last_price와 네이버 금융 가격을 교차 검증
+    - 5% 초과 괴리 → 네이버 가격 우선 사용 (Yahoo fast_info 캐싱 오류 방어)
+    - 5% 이내 일치 또는 네이버 조회 실패 → fast_info 사용
 
     처리 방식:
     - 0.1% 이내 차이 → 이미 최신, 변경 없음
     - last_date == today 이지만 Close가 stale → 기존 행 Close/High/Low 업데이트
-    - last_date < today → 오늘 행 신규 추가
-
-    장중에는 현재가(intraday), 장마감 후에는 종가가 적용됩니다.
+    - last_date < today → 네이버 교차검증 후 오늘 행 신규 추가
     """
     try:
         fi = ticker.fast_info
@@ -122,15 +161,40 @@ def _sync_latest_price_from_fast_info(
                 symbol, last_close, last_price,
             )
         else:
-            # 오늘 행 없음 → 신규 추가
-            # Open은 None이면 NaN — GAP 트리거가 SURGE와 동일값으로 중복 발생 방지
+            # ── 오늘 행 없음 (history 지연) → 교차 검증 후 신규 추가 ──────────────
+            # KR 종목은 Yahoo fast_info가 캐싱된 오래된 가격을 반환하는 경우가 있음
+            # (예: 일지테크 019540 → Yahoo=4,980 / Naver 실제=6,160 → 24% 괴리)
+            # 네이버 금융에서 독립적으로 현재가를 확인해 교차 검증 후 주입 가격 결정
+            inject_price = last_price  # 기본값: fast_info
+
+            if _is_kr:
+                _code6 = symbol.split(".")[0]
+                _naver = _fetch_naver_kr_price(_code6)
+                if _naver and _naver > 0:
+                    _nv_diff = abs(_naver - last_price) / last_price
+                    if _nv_diff > 0.05:
+                        # Yahoo-Naver 5% 초과 괴리 → Naver 가격 우선
+                        logger.warning(
+                            "fast_info 가격 오류 감지: %s → Yahoo %.0f / Naver %.0f (%.1f%% 괴리) — Naver 가격으로 주입",
+                            symbol, last_price, _naver, _nv_diff * 100,
+                        )
+                        inject_price = _naver
+                    else:
+                        logger.debug(
+                            "fast_info 교차검증 통과: %s → Yahoo %.0f / Naver %.0f (%.1f%% 이내)",
+                            symbol, last_price, _naver, _nv_diff * 100,
+                        )
+                else:
+                    # 네이버 조회 실패 시 fast_info 유지 (경고 없이 fallback)
+                    logger.debug("네이버 교차검증 생략: %s → Naver 조회 실패, fast_info 사용", symbol)
+
             _open = getattr(fi, "open", None)
             today_row = pd.DataFrame(
                 [{
                     "Open":   float(_open)     if _open     else float("nan"),
-                    "High":   float(_day_high) if _day_high else last_price,
-                    "Low":    float(_day_low)  if _day_low  else last_price,
-                    "Close":  last_price,
+                    "High":   float(_day_high) if _day_high else inject_price,
+                    "Low":    float(_day_low)  if _day_low  else inject_price,
+                    "Close":  inject_price,
                     "Volume": int(getattr(fi, "last_volume", 0) or 0),
                 }],
                 index=[pd.Timestamp(today)],
@@ -139,7 +203,7 @@ def _sync_latest_price_from_fast_info(
             df = pd.concat([df, today_row])
             logger.info(
                 "fast_info 동기화: %s → 오늘 Close %.4f 주입 (history 지연 감지)",
-                symbol, last_price,
+                symbol, inject_price,
             )
 
     except Exception as exc:
