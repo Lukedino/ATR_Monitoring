@@ -18,8 +18,8 @@ GitHub Actions 환경:
   환경변수 GHA_JOB 으로 실행할 작업 지정:
     stop_check        — 전 종목 Chandelier Stop 갱신 (평일 30분 주기)
     crypto_stop_check — 크립토 전용 Stop 갱신 (주말 30분 주기)
-    kr_daily_report   — 국내 종목 일일 리포트 (KST 18:00, 평일)
-    us_daily_report   — 미국+크립토 일일 리포트 (KST 08:00, 매일)
+    kr_daily_report   — 국내 종목 주간 리포트 (KST 금요일 18:00)
+    us_daily_report   — 미국+크립토 주간 리포트 (KST 토요일 08:00)
     trigger_check     — 즉각 대응 트리거 체크
 
 스케줄 (GHA, KST 기준):
@@ -289,15 +289,15 @@ def _run_daily_report(symbols: list[str], title: str) -> None:
 
 
 def job_kr_daily_report() -> None:
-    """[KST 18:00, 평일] 국내 종목 ATR 일일 리포트."""
-    _run_daily_report(KR_SYMBOLS, "📈 국내 포트폴리오 ATR 일일 리포트")
+    """[KST 금요일 18:00] 국내 종목 ATR 주간 리포트."""
+    _run_daily_report(KR_SYMBOLS, "📈 국내 포트폴리오 ATR 주간 리포트")
 
 
 def job_us_daily_report() -> None:
-    """[KST 08:00, 매일] 미국+크립토 ATR 일일 리포트."""
+    """[KST 토요일 08:00] 미국+크립토 ATR 주간 리포트."""
     _run_daily_report(
         US_SYMBOLS + CRYPTO_SYMBOLS,
-        "🌎 미국/크립토 포트폴리오 ATR 일일 리포트",
+        "🌎 미국/크립토 포트폴리오 ATR 주간 리포트",
     )
 
 
@@ -386,7 +386,7 @@ def run_scheduler() -> None:
         f"ATR 모니터링 시작\n"
         f"모니터링: {len(ALL_SYMBOLS)}종목 "
         f"(KR {len(KR_SYMBOLS)} / US {len(US_SYMBOLS)} / Crypto {len(CRYPTO_SYMBOLS)})\n"
-        f"국내 리포트: KST {KR_REPORT_TIME} / 미국 리포트: KST {US_REPORT_TIME}\n"
+        f"주간 리포트: KR 금요일 {KR_REPORT_TIME} / US·Crypto 토요일 {US_REPORT_TIME}\n"
         f"Stop 체크: 30분 주기 / 트리거: 10분 주기"
     )
     try:
