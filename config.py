@@ -67,7 +67,12 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
     df.columns = [str(c).strip() for c in df.columns]
     _ep_acc: dict[str, list[float]] = {}
     symbols: list[str] = []
+    # 진단 카운터 (총 행 수 vs 유효 / 중복 / 스킵 분류)
+    _stat_total      = 0   # 전체 행
+    _stat_skipped    = 0   # 빈 ticker 스킵
+    _stat_duplicate  = 0   # 중복 종목 (다계좌 보유)
     for _, row in df.iterrows():
+        _stat_total += 1
         category = str(row.get("구분", "")).strip()
         account  = str(row.get("계좌", "")).strip()
         name     = str(row.get("종목", "")).strip()   # 종목명 (표시용)
@@ -77,6 +82,7 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
         ticker = ticker_raw if (ticker_raw and ticker_raw != "nan") else name
 
         if not ticker or ticker == "nan":
+            _stat_skipped += 1
             continue
 
         # 접미사 중복 방지 + 시트 값 신뢰
@@ -102,6 +108,8 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
 
         if symbol not in symbols:          # 중복 제거 (순서 유지)
             symbols.append(symbol)
+        else:
+            _stat_duplicate += 1            # 다계좌 보유 등으로 동일 심볼 재출현
 
         # 종목명 수집 (Ticker 컬럼이 있을 때만 — 이름 ≠ 코드)
         if ticker_raw and ticker_raw != "nan" and name and name != "nan":
@@ -124,6 +132,13 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
                 pass
 
     _symbol_entry_prices = {sym: sum(v) / len(v) for sym, v in _ep_acc.items()}
+
+    # 진단 로그: 총 행 vs 유효/중복/스킵 분류 → 종목 수 차이 원인 추적
+    import logging as _log
+    _log.getLogger("config").info(
+        "포트폴리오 파싱 결과: 시트 %d행 → 유효 %d종목 (다계좌 중복 %d, 빈행 스킵 %d)",
+        _stat_total, len(symbols), _stat_duplicate, _stat_skipped,
+    )
     return {"포트폴리오": symbols}
 
 
