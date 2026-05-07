@@ -22,6 +22,59 @@ from config import LOOKBACK_DAYS
 logger = logging.getLogger(__name__)
 
 
+def _resolve_yahoo_crypto_ticker(symbol: str) -> str | None:
+    """
+    야후 검색 API로 크립토 심볼의 실제 yfinance 티커를 찾습니다.
+
+    배경: 신규 코인은 야후가 충돌 회피용 숫자 ID를 부여하여 베이스 심볼만으로
+          조회 불가한 경우가 있음 (예: HYPE-USD 직접 조회 실패 → 실제는 HYPE32196-USD).
+
+    동작:
+    - "BASE-USD" / "BASE-USDT" 형식 입력 → 베이스 부분 추출 후 검색
+    - 검색 결과 중 quoteType=CRYPTOCURRENCY 이고 베이스 또는 "베이스+숫자"로 시작하는 심볼 반환
+
+    Returns
+    -------
+    실제 yfinance 티커 (예: "HYPE32196-USD") 또는 None
+    """
+    sym_upper = symbol.upper()
+    suffix = None
+    for s in ("-USDT", "-USD"):
+        if sym_upper.endswith(s):
+            suffix = s
+            break
+    if suffix is None:
+        return None
+
+    base = sym_upper[: -len(suffix)]
+    if not base:
+        return None
+
+    try:
+        url = "https://query1.finance.yahoo.com/v1/finance/search"
+        params = {"q": base, "quotesCount": 15, "newsCount": 0}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+
+        for quote in data.get("quotes", []):
+            qsym = str(quote.get("symbol", "")).upper()
+            qtype = str(quote.get("quoteType", "")).upper()
+            if qtype != "CRYPTOCURRENCY":
+                continue
+            if not qsym.endswith(suffix):
+                continue
+            core = qsym[: -len(suffix)]
+            # 정확 일치 또는 "BASE+숫자" 형태 (HYPE → HYPE32196)
+            if core == base or (core.startswith(base) and core[len(base):].isdigit()):
+                return qsym
+        return None
+    except Exception as exc:
+        logger.debug("야후 크립토 심볼 검색 실패 (%s): %s", symbol, exc)
+        return None
+
+
 def _fetch_naver_kr_price(code6: str) -> float | None:
     """
     네이버 금융 모바일 API로 국내 종목 현재가를 조회합니다.
@@ -265,6 +318,23 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
                 ticker  = alt_ticker
                 df      = alt_df
                 _is_kq  = alt_is_kq
+
+        # 크립토 심볼 자동 교정
+        # 신규 코인은 야후가 충돌 회피용 숫자 ID를 부여 (예: HYPE-USD → HYPE32196-USD)
+        # 데이터 없으면 야후 검색 API로 실제 티커를 찾아 재조회
+        _is_crypto = _sym_upper.endswith("-USD") or _sym_upper.endswith("-USDT")
+        if df.empty and _is_crypto:
+            resolved = _resolve_yahoo_crypto_ticker(symbol)
+            if resolved and resolved.upper() != _sym_upper:
+                alt_ticker = yf.Ticker(resolved)
+                alt_df = alt_ticker.history(start=start, end=end, auto_adjust=True)
+                if not alt_df.empty:
+                    logger.warning(
+                        "크립토 심볼 자동 교정: %s → %s (야후 숫자 ID 부여 코인)",
+                        symbol, resolved,
+                    )
+                    ticker = alt_ticker
+                    df     = alt_df
 
         if df.empty:
             logger.warning("데이터 없음: %s", symbol)
