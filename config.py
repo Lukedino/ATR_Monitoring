@@ -79,12 +79,26 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
         if not ticker or ticker == "nan":
             continue
 
-        suffix = _CATEGORY_SUFFIX.get(category, "")
-        # KR/코스닥 종목코드는 6자리 zero-padding 보장
-        # (Excel이 숫자로 파싱하면 005930 → 5930 이 되므로)
-        if suffix in (".KS", ".KQ") and ticker.isdigit():
-            ticker = ticker.zfill(6)
-        symbol = ticker + suffix
+        # 접미사 중복 방지 + 시트 값 신뢰
+        # ① 이미 명시적 접미사(.KS/.KQ/-USD/-USDT)가 붙어 있으면 시트 값 그대로 사용
+        #    (예: "086450.KQ" + 구분 "한국" → "086450.KQ.KS" 버그 차단,
+        #     KOSDAQ 명시인 경우 시트값을 우선 신뢰)
+        # ② 접미사 없으면 구분 컬럼으로 자동 부착
+        _t_upper = ticker.upper()
+        _existing_suffix = next(
+            (s for s in (".KS", ".KQ", "-USDT", "-USD") if _t_upper.endswith(s)),
+            None,
+        )
+
+        if _existing_suffix:
+            symbol = ticker  # 시트가 이미 완성된 yfinance 심볼 → 그대로 사용
+        else:
+            suffix = _CATEGORY_SUFFIX.get(category, "")
+            # KR/코스닥 종목코드는 6자리 zero-padding 보장
+            # (Excel이 숫자로 파싱하면 005930 → 5930 이 되므로)
+            if suffix in (".KS", ".KQ") and ticker.isdigit():
+                ticker = ticker.zfill(6)
+            symbol = ticker + suffix
 
         if symbol not in symbols:          # 중복 제거 (순서 유지)
             symbols.append(symbol)
