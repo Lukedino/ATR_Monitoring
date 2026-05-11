@@ -100,12 +100,12 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "GHA_JOB=${{ inputs.job }}" >> $GITHUB_ENV
 
-          elif [ "$SCHEDULE" = "0 9 * * 1-5" ]; then
-            # KST 18:00 국내 일일 리포트
+          elif [ "$SCHEDULE" = "0 9 * * 5" ]; then
+            # KST 금요일 18:00 국내 주간 리포트
             echo "GHA_JOB=kr_daily_report" >> $GITHUB_ENV
 
-          elif [ "$SCHEDULE" = "0 23 * * *" ]; then
-            # KST 08:00 미국+크립토 일일 리포트
+          elif [ "$SCHEDULE" = "0 23 * * 5" ]; then
+            # KST 토요일 08:00 미국+크립토 주간 리포트
             echo "GHA_JOB=us_daily_report" >> $GITHUB_ENV
 
           elif [ "$SCHEDULE" = "0,30 2-22 * * 6" ] || [ "$SCHEDULE" = "0,30 0-22 * * 0" ]; then
