@@ -208,9 +208,9 @@ $178.20  →  $182.50  (+2.41% ↑)
 
 ### GCP / Drive 설정 (Mr.Stock-Market-Crawler와 공유)
 
-- **GCP 프로젝트**: `seraphic-jet-489008-b4`
-- **Service Account**: `stock-crawler-bot@seraphic-jet-489008-b4.iam.gserviceaccount.com`
-- **Drive 루트 폴더**: `1Rv2fBgJBpXGOUEq2MuwNKsDAqHfFpFP2`
+- **GCP 프로젝트**: (공개 저장소라 기재하지 않음 — GitHub Secrets 참조)
+- **Service Account**: (`GOOGLE_SERVICE_ACCOUNT_JSON` Secret 의 client_email)
+- **Drive 루트 폴더**: (`GDRIVE_FOLDER_ID` Secret)
 - Portfolio.xlsx 위치: Drive `input/` 폴더
 
 ---

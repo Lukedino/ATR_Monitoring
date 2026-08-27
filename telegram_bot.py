@@ -116,9 +116,9 @@ def send_message(text: str, parse_mode: str = "Markdown") -> bool:
     except requests.exceptions.HTTPError as exc:
         # 400 = Markdown 파싱 오류 → plain text로 재시도
         if exc.response is not None and exc.response.status_code == 400 and parse_mode:
-            logger.warning(
-                "Markdown 파싱 실패 (400) — plain text 재시도\n원문 앞 200자: %.200s", text
-            )
+            # 공개 저장소의 Actions 로그는 누구나 열람 가능 → 메시지 원문(계좌명·진입가 포함)은
+            # 남기지 않고 길이만 기록한다 (2026-08-27 보안점검)
+            logger.warning("Markdown 파싱 실패 (400) — plain text 재시도 (원문 %d자)", len(text))
             plain = text.replace("*", "").replace("_", "").replace("`", "")
             try:
                 resp2 = requests.post(
