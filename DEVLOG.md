@@ -317,3 +317,12 @@ python monitor.py --chart AAPL
 # 스케줄러 데몬 (로컬)
 python monitor.py
 ```
+
+## 2026-08-30 — 상태 파일(stop_levels.json)을 git 커밋 대신 Google Drive 에 보관
+
+- **문제**: public 저장소인데 봇이 매 실행 후 `data/stop_levels.json`(alert_log = 종목별 마지막 알림 이력)을 커밋해 **실제 보유 종목 144개와 편입·제외 시점이 공개 히스토리에 남았다**(봇 커밋 1,200여 건). private 전환은 GitHub Actions 무료 한도(private 합산 2,000분/월)를 넘겨(ATR 단독 ≈1,300분/월) 다른 저장소의 Actions까지 멈추므로 선택하지 않음
+- **해결**: `drive_state.py` — 실행 시작 시 Drive 파일을 `data/stop_levels.json`으로 내려받고(pull), 끝날 때 바뀐 경우에만 같은 파일을 `update()`(push, md5 검증). 입력(Portfolio)과 같은 서비스계정·같은 방식. 워크플로우의 커밋 단계와 `contents: write` 권한 삭제, `concurrency` 추가
+- **fail-closed**: Drive 파일이 비었거나 JSON 이 아니면, 또는 Actions 에서 `GDRIVE_STATE_FILE_ID` 가 없으면 실행을 중단하고 Telegram 으로 알린다 — 빈 기억으로 돌면 전 종목에 알림을 다시 보내는 스팸이 되기 때문
+- **설정**: 서비스계정과 공유된 Drive 폴더에 `stop_levels.json` 을 한 번 만들고(SA 는 새 파일 생성 불가 — 저장 쿼터 0) 파일 ID 를 Secret `GDRIVE_STATE_FILE_ID` 로 등록, 최초 1회 현재 내용을 시드
+- 공개 히스토리의 과거 `data/stop_levels.json` 은 `git filter-repo` 로 제거(force push). 테스트 `python -m pytest tests/`
+

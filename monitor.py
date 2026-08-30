@@ -55,7 +55,9 @@ from atr_calculator import (
     check_immediate_triggers,
 )
 from visualizer import plot_portfolio_atr_bar, plot_atr_chart
+import drive_state
 from stop_manager import (
+    DATA_FILE as STATE_FILE,
     load_all as load_stops,
     update_stop,
     add_position,
@@ -360,7 +362,28 @@ def run_github_actions_mode() -> None:
         logger.error("알 수 없는 GHA_JOB: %s", job_name)
         sys.exit(1)
 
-    fn()
+    # 2026-08-30: 상태 파일(stop_levels.json)은 repo 커밋 대신 Drive 에 보관 — 시작 시 pull, 종료 시 push.
+    # pull 실패 = 빈 기억으로 돌면 전 종목 알림 스팸이 되므로 실행을 중단하고 Telegram 으로 알린다.
+    try:
+        state = drive_state.from_env(STATE_FILE)
+        if state is not None:
+            state.pull()
+    except drive_state.StateSyncError as e:
+        logger.error("상태 파일 로드 실패: %s", e)
+        tg.send_message(f"⚠️ ATR 모니터 중단 — 상태 파일 로드 실패: {e}")
+        sys.exit(1)
+
+    try:
+        fn()
+    finally:
+        # 작업이 도중에 실패해도 그때까지 보낸 알림 이력은 저장한다 (중복 알림 방지)
+        if state is not None:
+            try:
+                state.push()
+            except drive_state.StateSyncError as e:
+                logger.error("상태 파일 저장 실패: %s", e)
+                tg.send_message(f"⚠️ ATR 상태 파일 저장 실패 — 다음 실행에서 알림이 중복될 수 있음: {e}")
+                raise
     logger.info("GitHub Actions 완료")
 
 
