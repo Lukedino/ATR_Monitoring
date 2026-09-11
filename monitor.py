@@ -40,6 +40,7 @@ import schedule
 
 from config import (
     ALL_SYMBOLS,
+    KR_STOCK_NAMES,
     KR_SYMBOLS,
     US_SYMBOLS,
     CRYPTO_SYMBOLS,
@@ -67,6 +68,7 @@ from stop_manager import (
     mark_trigger_sent,
 )
 import telegram_bot as tg
+import log_masking
 
 # ─────────────────────────────────────────────────────────────
 # 로깅 설정
@@ -79,6 +81,11 @@ logging.basicConfig(
 logger = logging.getLogger("monitor")
 
 IS_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+
+# public repo 라 Actions 로그가 공개된다 → GHA 에서만 실보유 티커·종목명을 가명으로 치환한다.
+# basicConfig 가 핸들러를 만든 뒤에 불러야 필터가 붙는다. config import 단계의 로그는
+# 종목 수만 찍으므로 이 시점보다 앞서 티커가 새는 경로는 없다. (2026-09-11 점검)
+log_masking.install_for_github_actions(ALL_SYMBOLS, KR_STOCK_NAMES)
 
 
 # ─────────────────────────────────────────────────────────────

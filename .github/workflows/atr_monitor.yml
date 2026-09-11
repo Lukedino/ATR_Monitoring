@@ -138,6 +138,8 @@ jobs:
           # 계좌 설정
           ACCOUNT_SIZE:       ${{ secrets.ACCOUNT_SIZE }}
           RISK_PER_TRADE:     ${{ secrets.RISK_PER_TRADE }}
+          # 공개 로그 마스킹 솔트 (미설정 시 TELEGRAM_BOT_TOKEN 으로 폴백)
+          LOG_MASK_SALT:      ${{ secrets.LOG_MASK_SALT }}
           # GitHub Actions 플래그
           GITHUB_ACTIONS:     'true'
         run: python monitor.py
