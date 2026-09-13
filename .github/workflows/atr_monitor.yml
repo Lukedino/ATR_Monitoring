@@ -1,45 +1,23 @@
 name: ATR Trailing Stop Monitor
 
 # ─────────────────────────────────────────────────────────────
-# 스케줄 (UTC 기준 / KST = UTC+9 / ET = UTC-5 겨울)
+# 트리거
 #
-# ┌─ 전 종목 Stop 체크 (KR + US + Crypto) ──────────────────────
-# │  평일 24h        : '0,30 * * * 1-5'
-# │  금→토 경계      : '0,30 0-1 * * 6'   (US 애프터마켓 마감, ET 20:00까지)
-# │  일→월 경계      : '0,30 23 * * 0'    (KR 프리마켓 시작, KST 08:00)
-# │
-# ├─ 크립토 전용 (주말 나머지 시간) ──────────────────────────────
-# │  토 02:00-22:30  : '0,30 2-22 * * 6'
-# │  일 00:00-22:30  : '0,30 0-22 * * 0'
-# │
-# ├─ 국내 주간 리포트  : KST 금요일 18:00 = UTC 금요일 09:00
-# └─ 미국+크립토 주간 리포트 : KST 토요일 08:00 = UTC 금요일 23:00
+# GHA schedule 이벤트는 배달률이 18% 다(2026-09-12 실측, 3월부터 13주 연속 하락).
+# GitHub 문서도 "some queued jobs may be dropped" 라고 명시한다. 그래서 "정각 실행" 을
+# 전제하지 않고, 창(window) 안에서 오늘 아직 안 했으면 하는 멱등 구조로 간다.
+# 무슨 작업을 할지는 크론이 아니라 market_hours.due_windows() 가 정한다.
 #
-# 시장별 UTC 커버리지:
-#   KR  프리+정규+시간외 : UTC 23:00~09:00  (KST 08:00~18:00)
-#   US  프리+정규+애프터 : UTC 09:00~01:00  (ET  04:00~20:00)
-#   진정한 비활성 구간   : UTC 01:30~09:00  (약 7.5h, 크립토만 활성)
+# 크론 1개: 10분 간격, 창이 걸리는 UTC 시에만, 비인기 분(:03/:13/…).
+#   - 분: GitHub 문서가 "High load times include the start of every hour" 라 하고,
+#         실측에서도 :30 이 :00 보다 37% 더 도착했다 → 라운드 시각을 피한다.
+#   - 시: market_hours 의 창 정의에서 생성했다(서머타임 양쪽 상태 포함). 창을 고치면
+#         이 목록도 다시 생성해야 한다 — tests/test_workflow_cron.py 가 대조한다.
+# 하루 84틱(기존 48). 창 밖 틱은 파이썬이 "실행할 창 없음" 으로 즉시 종료한다.
 # ─────────────────────────────────────────────────────────────
 on:
   schedule:
-    # 전 종목 Stop 체크 (평일 24h)
-    - cron: '0,30 * * * 1-5'
-
-    # 금→토 경계: 미국 애프터마켓 마감 커버 (토 00:00~01:30 UTC)
-    - cron: '0,30 0-1 * * 6'
-
-    # 일→월 경계: 한국 프리마켓 시작 커버 (일 23:00~23:30 UTC)
-    - cron: '0,30 23 * * 0'
-
-    # 크립토 전용 (주말 나머지 시간)
-    - cron: '0,30 2-22 * * 6'   # 토 02:00~22:30 UTC
-    - cron: '0,30 0-22 * * 0'   # 일 00:00~22:30 UTC
-
-    # 국내 주간 리포트 (금요일만, KST 금요일 18:00 = UTC 금요일 09:00)
-    - cron: '0 9 * * 5'
-
-    # 미국+크립토 주간 리포트 (금요일 밤, KST 토요일 08:00 = UTC 금요일 23:00)
-    - cron: '0 23 * * 5'
+    - cron: '3,13,23,33,43,53 0,6,8-10,12-15,18-21,23 * * *'
 
   # 수동 실행 (Actions 탭에서 직접 트리거)
   workflow_dispatch:
@@ -47,9 +25,10 @@ on:
       job:
         description: '실행할 작업'
         required: true
-        default: 'stop_check'
+        default: 'auto'
         type: choice
         options:
+          - auto
           - stop_check
           - crypto_stop_check
           - kr_daily_report
@@ -92,35 +71,15 @@ jobs:
           fc-cache -fv
 
       # ── 4. 실행할 작업 결정 ───────────────────────────────
-      #   github.event.schedule 로 어떤 cron이 실행됐는지 정확히 판별
-      #   (시간 파싱 방식 대비 GHA 지연 무관하게 신뢰도 높음)
       - name: Determine job type
         id: job_type
         run: |
-          SCHEDULE="${{ github.event.schedule }}"
-
-          # 수동 실행 시 입력값 우선
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "GHA_JOB=${{ inputs.job }}" >> $GITHUB_ENV
-
-          elif [ "$SCHEDULE" = "0 9 * * 5" ]; then
-            # KST 금요일 18:00 국내 주간 리포트
-            echo "GHA_JOB=kr_daily_report" >> $GITHUB_ENV
-
-          elif [ "$SCHEDULE" = "0 23 * * 5" ]; then
-            # KST 토요일 08:00 미국+크립토 주간 리포트
-            echo "GHA_JOB=us_daily_report" >> $GITHUB_ENV
-
-          elif [ "$SCHEDULE" = "0,30 2-22 * * 6" ] || [ "$SCHEDULE" = "0,30 0-22 * * 0" ]; then
-            # 주말 비활성 시간대 크립토 전용 Stop 체크
-            echo "GHA_JOB=crypto_stop_check" >> $GITHUB_ENV
-
           else
-            # 전 종목 Stop 체크:
-            #   '0,30 * * * 1-5'  — 평일 24h
-            #   '0,30 0-1 * * 6'  — 토 새벽 (US 애프터마켓 마감)
-            #   '0,30 23 * * 0'   — 일 밤  (KR 프리마켓 시작)
-            echo "GHA_JOB=stop_check" >> $GITHUB_ENV
+            # 예약 실행은 전부 창 판정에 맡긴다. 크론 표현식 문자열로 작업 종류를
+            # 고르던 방식은 표현식이 바뀔 때마다 조용히 어긋났다(커밋 153436e).
+            echo "GHA_JOB=auto" >> $GITHUB_ENV
           fi
 
       # ── 5. ATR 모니터 실행 ────────────────────────────────
