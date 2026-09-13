@@ -93,45 +93,16 @@ log_masking.install_for_github_actions(ALL_SYMBOLS, KR_STOCK_NAMES)
 # ─────────────────────────────────────────────────────────────
 
 def _is_market_active_for_triggers(symbol: str) -> bool:
-    """
-    해당 종목의 시장이 현재 트리거 알람을 발송할 수 있는 활성 시간대인지 반환합니다.
+    """해당 종목의 시장이 지금 트리거 알람을 발송할 수 있는 활성 시간대인지 반환합니다.
 
-    시장별 활성 구간 (UTC 기준):
-      KR     : 평일 UTC 23:00(전일)~09:00  ← KST 08:00(프리)~18:00(애프터 종료)
-               일요일 UTC 23:00~24:00      ← 월요일 KR 프리마켓 시작
-      US/ETF : 평일 UTC 09:00~01:00+1      ← ET 04:00(프리)~20:00(애프터 종료)
-               토요일 UTC 00:00~01:00      ← 금요일 US 애프터마켓 마감 직후 커버
-      Crypto : 항상 True (24/7)
-
-    장 마감 후에는 가격이 동결되므로 콘텐츠 기반 중복 체크도 스킵을 보장하지만,
-    이 게이트가 추가 방어선으로 작동하여 불필요한 계산을 차단합니다.
+    판정은 market_hours 로 위임한다. 예전에는 여기서 UTC 시를 직접 계산했는데,
+    그 방식이 KR 애프터마켓 연장(2026-09-14)과 US 서머타임을 둘 다 놓쳤다.
     """
     from datetime import datetime, timezone
     from config import get_market_type
+    from market_hours import is_market_active
 
-    market = get_market_type(symbol)
-    if market == "Crypto":
-        return True
-
-    now_utc = datetime.now(timezone.utc)
-    weekday = now_utc.weekday()   # 0=월 … 4=금, 5=토, 6=일
-    h       = now_utc.hour
-
-    if market == "KR":
-        if weekday == 5:           # 토: 종일 비활성
-            return False
-        if weekday == 6:           # 일: UTC 23시부터 KR 프리마켓 시작 (KST 월 08:00)
-            return h >= 23
-        # 평일: UTC 09:00~22:59 → KR 장 마감 구간 (KST 18:00~07:59)
-        return not (9 <= h < 23)
-
-    # US / ETF
-    if weekday == 6:               # 일: 종일 비활성
-        return False
-    if weekday == 5:               # 토: UTC 01:00 이전만 US 애프터마켓 활성
-        return h < 1
-    # 평일: UTC 01:00~08:59 → KR·US 양쪽 모두 종료된 비활성 구간
-    return not (1 <= h < 9)
+    return is_market_active(get_market_type(symbol), datetime.now(timezone.utc))
 
 
 # ─────────────────────────────────────────────────────────────
