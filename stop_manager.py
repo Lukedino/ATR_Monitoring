@@ -422,3 +422,43 @@ def summary_text() -> str:
             f"{rec.stop_dist_pct:>7.2f}% {stage_label:>6}  {rec.last_updated}"
         )
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
+# 창(window) 실행 멱등성 (done_windows)
+#
+# GHA 트리거가 언제 몇 번 떨어질지 보장되지 않으므로(배달률 18%, 밀림 최대 4시간),
+# "창 안에서 오늘 아직 안 했으면 한다" 를 성립시키려면 완료 기록이 필요하다.
+# alert_log 와 같은 방식으로 같은 상태 파일에 얹는다 — Drive 왕복이 이미 그 파일 하나다.
+#
+# stop_levels.json 내 "done_windows" 섹션:
+#   {"2026-09-14": ["kr_open", "crypto_2"], ...}
+# 키는 창의 지역 날짜다. UTC 날짜를 쓰면 EST 금요일 애프터마켓이 토요일로 기록된다.
+# ─────────────────────────────────────────────────────────────
+
+DONE_WINDOW_RETENTION_DAYS = 7
+
+
+def is_window_done(window_name: str, local_date) -> bool:
+    """해당 창을 그 지역 날짜에 이미 실행했는지."""
+    raw = _load_raw()
+    return window_name in raw.get("done_windows", {}).get(local_date.isoformat(), [])
+
+
+def mark_window_done(window_name: str, local_date) -> None:
+    """창 실행 완료를 기록하고 오래된 날짜를 정리한다."""
+    raw  = _load_raw()
+    done = raw.get("done_windows", {})
+    key  = local_date.isoformat()
+
+    names = done.setdefault(key, [])
+    if window_name not in names:
+        names.append(window_name)
+
+    # 무한 증식 방지 — 최근 며칠만 남긴다 (Drive 왕복 파일이 계속 커지지 않도록)
+    if len(done) > DONE_WINDOW_RETENTION_DAYS:
+        for stale in sorted(done)[: len(done) - DONE_WINDOW_RETENTION_DAYS]:
+            del done[stale]
+
+    raw["done_windows"] = done
+    _save_raw(raw)

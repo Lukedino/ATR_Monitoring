@@ -418,3 +418,58 @@ def fmt_chandelier_report(chandelier_results: list) -> str:
         lines.append(line)
 
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
+# 일일 종가 요약 (종가 창 전용)
+#
+# 주간 리포트는 그대로 둔다 — 바차트 + Chandelier 전 종목 나열 + 종목별 미니차트 N장.
+# 매일 종가에는 텍스트 1건만 보낸다. 이미지가 없으니 rate limit 대기(장당 4초)가 없고
+# 실행이 빠르다. 보유가 78종목이라 이름 나열에는 상한을 둔다.
+# ─────────────────────────────────────────────────────────────
+
+BRIEF_NAME_LIMIT = 5
+
+
+def _brief_names(results: list) -> str:
+    """Stop 거리가 가까운 순으로 몇 개만 이름을 남기고 나머지는 접는다."""
+    ordered = sorted(results, key=lambda r: r.dist_to_stop_pct)
+    shown   = [fmt_symbol(r.symbol) for r in ordered[:BRIEF_NAME_LIMIT]]
+    rest    = len(ordered) - len(shown)
+    return ", ".join(shown) + (f" 외 {rest}개" if rest > 0 else "")
+
+
+def fmt_daily_brief(
+    title: str,
+    data_date: str,
+    chandelier_results: list,
+    spike_count: int = 0,
+    updated_count: int = 0,
+) -> str:
+    """종가 요약 — 이탈/근접/여유 개수와 이름 일부만.
+
+    is_near_stop 은 이탈을 포함하므로 그대로 세면 이탈 종목이 두 번 잡힌다. 셋을 서로소로 나눈다.
+    """
+    breached = [r for r in chandelier_results if r.is_breached]
+    near     = [r for r in chandelier_results if r.is_near_stop and not r.is_breached]
+    safe     = [r for r in chandelier_results if not r.is_near_stop]
+
+    lines = [
+        f"📊 *{title}*",
+        f"📅 {data_date} 기준 · 보유 {len(chandelier_results)}종목",
+    ]
+    if breached:
+        lines.append(f"🔴 손절 이탈 {len(breached)} — {_brief_names(breached)}")
+    if near:
+        lines.append(f"🟡 손절 근접 {len(near)} — {_brief_names(near)}")
+    lines.append(f"🟢 여유 {len(safe)}")
+
+    tail = []
+    if spike_count:
+        tail.append(f"ATR 스파이크 {spike_count}")
+    if updated_count:
+        tail.append(f"Stop 갱신 {updated_count}")
+    if tail:
+        lines.append(" · ".join(tail))
+
+    return "\n".join(lines)

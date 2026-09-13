@@ -66,9 +66,13 @@ from stop_manager import (
     summary_text as stop_summary_text,
     should_send_trigger_alert,
     mark_trigger_sent,
+    is_window_done,
+    mark_window_done,
 )
 import telegram_bot as tg
 import log_masking
+import market_hours
+from dataclasses import dataclass
 
 # ─────────────────────────────────────────────────────────────
 # 로깅 설정
@@ -109,6 +113,15 @@ def _is_market_active_for_triggers(symbol: str) -> bool:
 # 핵심 작업 함수
 # ─────────────────────────────────────────────────────────────
 
+@dataclass
+class StopCheckResult:
+    """종가 창의 일일 요약에 필요한 값. 요약이 붙지 않는 창에서는 쓰이지 않는다."""
+    chandelier:    list
+    updated_count: int
+    ohlcv_map:     dict
+    data_date:     str
+
+
 def job_stop_check(symbols: list[str] | None = None) -> None:
     """
     [30분 주기] Chandelier Stop 갱신 체크.
@@ -125,7 +138,7 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
     logger.info("Stop 갱신 체크 시작 (%d종목)", len(syms))
     ohlcv_map   = fetch_portfolio(syms)
     stop_recs   = load_stops()
-    updated_any = False
+    updated_count = 0
 
     chandelier_list = []
     for symbol, df in ohlcv_map.items():
@@ -166,7 +179,7 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
             new_hh        = ch.highest_high,
         )
         if result.updated:
-            updated_any = True
+            updated_count += 1
             tg.send_message(tg.fmt_stop_update(result))
             chart = plot_atr_chart(symbol, df, registered_stop=result.new_stop, as_bytes=True)
             tg.send_photo(
@@ -175,10 +188,16 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
             )
             logger.info("Stop 갱신 알림 전송: %s", symbol)
 
-    if not updated_any:
+    if not updated_count:
         logger.info("Stop 갱신 없음 (전 종목 유지)")
 
     logger.info("Stop 갱신 체크 완료")
+    return StopCheckResult(
+        chandelier    = chandelier_list,
+        updated_count = updated_count,
+        ohlcv_map     = ohlcv_map,
+        data_date     = _get_data_date(ohlcv_map),
+    )
 
 
 def _get_data_date(ohlcv_map: dict) -> str:
@@ -316,6 +335,80 @@ def job_trigger_check() -> None:
 # GitHub Actions 단일 실행 모드
 # ─────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────
+# 창(window) 실행기
+#
+# GHA schedule 배달률이 18% 라(2026-09-12 실측) "정각 실행" 을 전제할 수 없다.
+# 창 안에서 오늘 아직 안 했으면 한다 — 트리거가 몇 번 떨어지든 창당 1회.
+# ─────────────────────────────────────────────────────────────
+
+_WINDOW_SYMBOLS = {
+    "KR":     KR_SYMBOLS,
+    "US":     US_SYMBOLS,      # ETF 포함 (config.US_SYMBOLS = KR·크립토가 아닌 전부)
+    "Crypto": CRYPTO_SYMBOLS,
+}
+
+
+def _send_daily_brief(window, result: StopCheckResult) -> None:
+    """종가 요약 — 텍스트 1건. 주간 리포트와 달리 차트를 붙이지 않는다."""
+    spike_count = 0
+    try:
+        summary = summarize_portfolio_atr(result.ohlcv_map, ATR_PERIOD)
+        if not summary.empty and "Spike" in summary.columns:
+            spike_count = int(summary["Spike"].astype(bool).sum())
+    except Exception as exc:
+        # 요약의 곁가지일 뿐이라 실패해도 본문은 보낸다
+        logger.warning("스파이크 집계 실패 — 요약에서 생략: %s", exc)
+
+    tg.send_message(tg.fmt_daily_brief(
+        f"{window.market} 종가 요약",
+        result.data_date,
+        result.chandelier,
+        spike_count   = spike_count,
+        updated_count = result.updated_count,
+    ))
+
+
+def _run_window(window) -> None:
+    """창 하나의 본체."""
+    if window.action == "weekly_report":
+        (job_kr_daily_report if window.market == "KR" else job_us_daily_report)()
+        return
+
+    result = job_stop_check(_WINDOW_SYMBOLS[window.market])
+    if window.brief and result is not None:
+        _send_daily_brief(window, result)
+
+
+def run_due_windows(now_utc=None) -> None:
+    """지금 해당하는 창 중 오늘 아직 안 한 것을 실행한다."""
+    from datetime import datetime, timezone
+
+    now = now_utc if now_utc is not None else datetime.now(timezone.utc)
+    due = market_hours.due_windows(now)
+    if not due:
+        logger.info("실행할 창 없음 — 종료")
+        return
+
+    for window in due:
+        local_date = window.local_date(now)
+        if is_window_done(window.name, local_date):
+            logger.info("창 건너뜀 (이미 완료): %s", window.name)
+            continue
+
+        logger.info("창 실행: %s (%s / %s)", window.name, window.market, window.action)
+        try:
+            _run_window(window)
+        except Exception as exc:
+            # 실패를 완료로 기록하면 그날 그 창은 영영 안 돈다. 표시하지 않고 넘어가
+            # 같은 창 안 다음 틱이 재시도하게 둔다. 겹친 다른 창도 막지 않는다.
+            logger.error("창 실행 실패 — 완료 표시 안 함: %s: %s", window.name, exc)
+            continue
+
+        mark_window_done(window.name, local_date)
+        logger.info("창 완료: %s", window.name)
+
+
 def run_github_actions_mode() -> None:
     """
     GitHub Actions 환경: 환경변수 GHA_JOB 으로 작업 선택 후 종료.
@@ -334,6 +427,7 @@ def run_github_actions_mode() -> None:
         "kr_daily_report":   job_kr_daily_report,
         "us_daily_report":   job_us_daily_report,
         "trigger_check":     job_trigger_check,
+        "auto":              run_due_windows,
     }
     fn = dispatch.get(job_name)
     if fn is None:

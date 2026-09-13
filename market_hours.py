@@ -55,3 +55,78 @@ def is_market_active(market: str, now_utc: dt.datetime) -> bool:
     if local.weekday() >= 5:      # 지역 시간대 기준 주말
         return False
     return start <= local.time() < end
+
+
+# ─────────────────────────────────────────────────────────────
+# 실행 창 (window)
+#
+# GHA schedule 이벤트가 배달률 18% 로 드롭되므로(2026-09-12 실측) "정각 실행" 을 전제할 수 없다.
+# 대신 창 안에서 오늘 아직 안 했으면 하는 멱등 구조로 간다 — 몇 분 밀려도, 중복 발사돼도
+# 안전하고 창 안 재시도가 공짜로 생긴다.
+#
+# 창은 전부 지역 시각으로 정의한다. KR·크립토는 KST 고정(서머타임 없음), US 는 ET 이라
+# America/New_York 변환이 서머타임을 자동 처리한다.
+# ─────────────────────────────────────────────────────────────
+from dataclasses import dataclass, field  # noqa: E402
+
+WEEKDAYS = frozenset({0, 1, 2, 3, 4})
+EVERYDAY = frozenset(range(7))
+
+
+@dataclass(frozen=True)
+class Window:
+    name:         str
+    market:       str          # "KR" | "US" | "Crypto"
+    tz:           ZoneInfo
+    start:        dt.time
+    duration_min: int
+    action:       str          # "stop_check" | "weekly_report"
+    weekdays:     frozenset    # 지역 시각 기준 요일 (0=월)
+    brief:        bool = False # 종가 창만 일일 요약을 덧붙인다
+
+    def local_date(self, now_utc: dt.datetime) -> dt.date:
+        """멱등성 키로 쓸 날짜. UTC 날짜를 쓰면 경계에서 하루가 어긋난다."""
+        return now_utc.astimezone(self.tz).date()
+
+    def is_due(self, now_utc: dt.datetime) -> bool:
+        local = now_utc.astimezone(self.tz)
+        if local.weekday() not in self.weekdays:
+            return False
+        end = (dt.datetime.combine(local.date(), self.start)
+               + dt.timedelta(minutes=self.duration_min)).time()
+        return self.start <= local.time() < end
+
+
+def _w(name, market, tz, hh, mm, dur, action="stop_check", weekdays=WEEKDAYS, brief=False):
+    return Window(name, market, tz, dt.time(hh, mm), dur, action, weekdays, brief)
+
+
+ALL_WINDOWS: tuple[Window, ...] = (
+    # KR — 정규장 09:00~15:30, 애프터마켓 16:00~20:00 (2026-09-14 신설)
+    _w("kr_open",        "KR", SEOUL,  9,  7, 30),
+    _w("kr_late",        "KR", SEOUL, 14, 57, 30),
+    _w("kr_close",       "KR", SEOUL, 15, 35, 25, brief=True),
+    _w("kr_after",       "KR", SEOUL, 17,  0, 30),
+    _w("kr_after_close", "KR", SEOUL, 19, 30, 30),
+
+    # US — 프리 04:00~, 정규장 09:30~16:00, 애프터 ~20:00 ET
+    _w("us_open",        "US", NEW_YORK,  9, 37, 30),
+    _w("us_late",        "US", NEW_YORK, 15, 27, 30),
+    _w("us_close",       "US", NEW_YORK, 16,  5, 25, brief=True),
+    _w("us_after_close", "US", NEW_YORK, 19, 30, 30),
+
+    # Crypto — 24/7 이라 장 개념이 없어 KST 6시간 균등
+    _w("crypto_1", "Crypto", SEOUL,  3,  7, 30, weekdays=EVERYDAY),
+    _w("crypto_2", "Crypto", SEOUL,  9,  7, 30, weekdays=EVERYDAY),
+    _w("crypto_3", "Crypto", SEOUL, 15,  7, 30, weekdays=EVERYDAY),
+    _w("crypto_4", "Crypto", SEOUL, 21,  7, 30, weekdays=EVERYDAY),
+
+    # 주간 리포트 — 기존 동작 유지 (금 18:00 KST / 토 08:00 KST)
+    _w("kr_weekly", "KR", SEOUL, 18, 0, 30, action="weekly_report", weekdays=frozenset({4})),
+    _w("us_weekly", "US", SEOUL,  8, 0, 30, action="weekly_report", weekdays=frozenset({5})),
+)
+
+
+def due_windows(now_utc: dt.datetime) -> list[Window]:
+    """지금 시각에 해당하는 창 전부. 겹치는 창(KR 장초반 + 크립토 2번)은 둘 다 돌려준다."""
+    return [w for w in ALL_WINDOWS if w.is_due(now_utc)]
