@@ -369,40 +369,50 @@ def _send_daily_brief(window, result: StopCheckResult) -> None:
     ))
 
 
-def _run_window(window) -> None:
-    """창 하나의 본체."""
+def _run_window_extra(window, result) -> None:
+    """창이 덧붙이는 것 — 종가 요약, 주간 리포트. 전 종목 stop_check 은 이미 돌았다."""
     if window.action == "weekly_report":
         (job_kr_daily_report if window.market == "KR" else job_us_daily_report)()
         return
-
-    result = job_stop_check(_WINDOW_SYMBOLS[window.market])
     if window.brief and result is not None:
         _send_daily_brief(window, result)
 
 
 def run_due_windows(now_utc=None) -> None:
-    """지금 해당하는 창 중 오늘 아직 안 한 것을 실행한다."""
+    """전 종목 stop_check 을 항상 돌리고, 해당 창이 있으면 그 위에 얹는 것만 추가한다.
+
+    2026-09-15 실측으로 고친 구조다. 창 안에서만 stop_check 을 돌렸더니 배달된 런 10건 중
+    창(25~30분)에 들어간 건 1건뿐이었고, 월요일 하루 KR 창이 하나도 돌지 않았다. 배달률이
+    7% 라 좁은 창을 요구하면 대부분의 날에 아무것도 안 돈다 — 트리거 알림을 창에 가두면
+    안 된다. 배달된 런은 무조건 전 종목을 본다(교체 전과 같은 안전망).
+    """
     from datetime import datetime, timezone
 
     now = now_utc if now_utc is not None else datetime.now(timezone.utc)
-    due = market_hours.due_windows(now)
-    if not due:
-        logger.info("실행할 창 없음 — 종료")
-        return
 
-    for window in due:
+    # 안전망 — 창과 무관하게, 창이 몇 개 겹치든 한 번.
+    result = None
+    try:
+        result = job_stop_check()
+    except Exception as exc:
+        # 손절 체크가 실패해도 요약·리포트 시도는 막지 않는다
+        logger.error("전 종목 stop_check 실패: %s", exc)
+
+    for window in market_hours.due_windows(now):
+        if window.action == "stop_check" and not window.brief:
+            continue   # 안전망이 이미 덮는다
+
         local_date = window.local_date(now)
         if is_window_done(window.name, local_date):
-            logger.info("창 건너뜀 (이미 완료): %s", window.name)
+            logger.info("창 건너뜀 (오늘 이미 완료): %s", window.name)
             continue
 
-        logger.info("창 실행: %s (%s / %s)", window.name, window.market, window.action)
+        logger.info("창 추가 작업: %s (%s / %s)", window.name, window.market, window.action)
         try:
-            _run_window(window)
+            _run_window_extra(window, result)
         except Exception as exc:
-            # 실패를 완료로 기록하면 그날 그 창은 영영 안 돈다. 표시하지 않고 넘어가
-            # 같은 창 안 다음 틱이 재시도하게 둔다. 겹친 다른 창도 막지 않는다.
-            logger.error("창 실행 실패 — 완료 표시 안 함: %s: %s", window.name, exc)
+            # 실패를 완료로 적으면 그날 그 창은 영영 안 간다 → 표시하지 않고 재시도에 맡긴다
+            logger.error("창 추가 작업 실패 — 완료 표시 안 함: %s: %s", window.name, exc)
             continue
 
         mark_window_done(window.name, local_date)
