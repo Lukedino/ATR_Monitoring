@@ -1,9 +1,16 @@
-"""창 실행기 — 어떤 창을 돌리고 무엇을 건너뛰는가.
+"""창 실행기.
 
-GHA 트리거가 창 안에 여러 번 떨어질 수도, 한 번도 안 떨어질 수도 있다(배달률 18%).
-그래서 실행기는 두 가지를 보장해야 한다:
-  - 이미 한 창은 다시 하지 않는다 (중복 알림 방지)
-  - 실패한 창은 완료로 기록하지 않는다 → 같은 창 안 다음 틱이 재시도한다
+**2026-09-15 실측으로 설계를 한 번 고쳤다.** 처음에는 창 안에서만 stop_check 을 돌렸는데,
+배달된 런 10건 중 창(25~30분)에 들어간 건 1건뿐이었고 월요일 하루 KR 창이 하나도 돌지
+않았다. 배달률이 7% 라 좁은 창을 요구하면 대부분의 날에 아무것도 안 돈다.
+
+그래서 역할을 나눴다:
+  - **전 종목 stop_check 은 창과 무관하게 항상 돈다** — 교체 전과 같은 안전망.
+    트리거 알림을 창에 가두면 안 된다.
+  - **창은 그 위에 얹는 것만 정한다** — 종가 요약, 주간 리포트. 하루 1회 멱등.
+
+stop_check 전용 창(kr_open 등)은 안전망이 이미 덮으므로 실행기가 건너뛴다. 창 정의 자체는
+남겨 둔다 — 트리거가 신뢰할 수 있게 되면(Cloud Scheduler) 다시 의미가 생긴다.
 """
 import datetime as dt
 import json
@@ -26,8 +33,10 @@ def _utc(*args: int) -> dt.datetime:
     return dt.datetime(*args, tzinfo=SEOUL).astimezone(dt.timezone.utc)
 
 
-KR_OPEN_TIME = _utc(2026, 9, 14, 9, 20)   # kr_open 과 crypto_2 가 겹치는 시각
-QUIET_TIME   = _utc(2026, 9, 14, 11, 0)   # 어떤 창도 아닌 시각
+QUIET_TIME = _utc(2026, 9, 14, 11, 0)    # 어떤 창도 아닌 시각
+OPEN_TIME  = _utc(2026, 9, 14, 9, 20)    # kr_open + crypto_2 — 둘 다 stop_check 전용
+CLOSE_TIME = _utc(2026, 9, 14, 15, 40)   # kr_close — 종가 요약이 붙는 창
+D = dt.date(2026, 9, 14)
 
 
 @pytest.fixture
@@ -39,71 +48,87 @@ def isolated_state(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def recorded(monkeypatch):
-    """창 본체 실행을 가로채 이름만 기록한다 — 네트워크·텔레그램을 타지 않도록."""
-    calls: list[str] = []
-    monkeypatch.setattr(monitor, "_run_window", lambda w: calls.append(w.name))
-    return calls
+def stub(monkeypatch):
+    """네트워크·텔레그램을 타지 않도록 본체를 가로채고 호출만 기록한다."""
+    rec = {"stop_check": [], "extra": []}
+    monkeypatch.setattr(monitor, "job_stop_check",
+                        lambda symbols=None: rec["stop_check"].append(symbols))
+    monkeypatch.setattr(monitor, "_run_window_extra",
+                        lambda w, result: rec["extra"].append(w.name))
+    return rec
 
 
-def test_no_due_window_runs_nothing(isolated_state, recorded):
+# ── 안전망: stop_check 은 항상 돈다 ─────────────────────────
+def test_stop_check_runs_even_when_no_window_is_due(isolated_state, stub):
     monitor.run_due_windows(now_utc=QUIET_TIME)
-    assert recorded == []
+    assert stub["stop_check"] == [None], "창이 없어도 전 종목을 봐야 한다"
 
 
-def test_due_window_runs(isolated_state, recorded):
-    monitor.run_due_windows(now_utc=KR_OPEN_TIME)
-    assert "kr_open" in recorded
+def test_stop_check_runs_once_even_with_overlapping_windows(isolated_state, stub):
+    """겹친 창이 둘이어도 전 종목 체크는 한 번 — 야후를 두 번 칠 이유가 없다."""
+    monitor.run_due_windows(now_utc=OPEN_TIME)
+    assert len(stub["stop_check"]) == 1
 
 
-def test_due_window_is_marked_done(isolated_state, recorded):
-    monitor.run_due_windows(now_utc=KR_OPEN_TIME)
-    assert sm.is_window_done("kr_open", dt.date(2026, 9, 14)) is True
+def test_stop_check_covers_all_symbols_not_just_one_market(isolated_state, stub):
+    """시장별로 좁히면 그 시장 창이 안 떨어진 날 그 시장이 통째로 빈다."""
+    monitor.run_due_windows(now_utc=CLOSE_TIME)
+    assert stub["stop_check"][0] is None
 
 
-def test_already_done_window_is_skipped(isolated_state, recorded):
-    sm.mark_window_done("kr_open", dt.date(2026, 9, 14))
-    monitor.run_due_windows(now_utc=KR_OPEN_TIME)
-    assert "kr_open" not in recorded
+# ── 창은 덧붙이는 것만 ──────────────────────────────────────
+def test_stop_check_only_windows_add_nothing(isolated_state, stub):
+    """kr_open 은 안전망이 이미 덮는다 — 따로 실행할 게 없다."""
+    monitor.run_due_windows(now_utc=OPEN_TIME)
+    assert stub["extra"] == []
 
 
-def test_overlapping_windows_both_run(isolated_state, recorded):
-    """09:07 에 KR 장초반과 크립토 2번이 겹친다 — 대상 종목이 달라 둘 다 돌아야 한다."""
-    monitor.run_due_windows(now_utc=KR_OPEN_TIME)
-    assert "kr_open" in recorded and "crypto_2" in recorded
+def test_brief_window_adds_the_daily_summary(isolated_state, stub):
+    monitor.run_due_windows(now_utc=CLOSE_TIME)
+    assert stub["extra"] == ["kr_close"]
 
 
-def test_second_tick_in_same_window_does_not_rerun(isolated_state, recorded):
-    """트리거가 창 안에 두 번 떨어져도 알림은 한 번이어야 한다."""
-    monitor.run_due_windows(now_utc=KR_OPEN_TIME)
-    recorded.clear()
-    monitor.run_due_windows(now_utc=_utc(2026, 9, 14, 9, 30))
-    assert recorded == []
+def test_brief_window_is_marked_done(isolated_state, stub):
+    monitor.run_due_windows(now_utc=CLOSE_TIME)
+    assert sm.is_window_done("kr_close", D) is True
 
 
-def test_failed_window_is_not_marked_done(isolated_state, monkeypatch):
-    """실패를 완료로 기록하면 그날 그 창은 영영 안 돈다 — 창 안 재시도가 살아 있어야 한다."""
-    def boom(w):
+def test_brief_is_sent_once_per_day(isolated_state, stub):
+    """창 안에 런이 두 번 떨어져도 요약은 하루 한 번."""
+    monitor.run_due_windows(now_utc=CLOSE_TIME)
+    stub["extra"].clear()
+    monitor.run_due_windows(now_utc=_utc(2026, 9, 14, 15, 50))
+    assert stub["extra"] == []
+
+
+def test_stop_check_still_runs_on_the_second_tick(isolated_state, stub):
+    """요약은 하루 한 번이지만 손절 체크는 매 런 돌아야 한다."""
+    monitor.run_due_windows(now_utc=CLOSE_TIME)
+    monitor.run_due_windows(now_utc=_utc(2026, 9, 14, 15, 50))
+    assert len(stub["stop_check"]) == 2
+
+
+# ── 실패 격리 ───────────────────────────────────────────────
+def test_failed_extra_is_not_marked_done(isolated_state, monkeypatch):
+    """실패를 완료로 적으면 그날 요약이 영영 안 간다."""
+    monkeypatch.setattr(monitor, "job_stop_check", lambda symbols=None: None)
+
+    def boom(w, result):
+        raise RuntimeError("텔레그램 실패")
+    monkeypatch.setattr(monitor, "_run_window_extra", boom)
+
+    monitor.run_due_windows(now_utc=CLOSE_TIME)
+    assert sm.is_window_done("kr_close", D) is False
+
+
+def test_failed_stop_check_does_not_block_the_extra(isolated_state, monkeypatch):
+    """손절 체크가 실패해도 요약 시도는 해야 한다."""
+    extras: list = []
+
+    def boom(symbols=None):
         raise RuntimeError("야후 조회 실패")
-    monkeypatch.setattr(monitor, "_run_window", boom)
+    monkeypatch.setattr(monitor, "job_stop_check", boom)
+    monkeypatch.setattr(monitor, "_run_window_extra", lambda w, r: extras.append(w.name))
 
-    monitor.run_due_windows(now_utc=KR_OPEN_TIME)
-
-    assert sm.is_window_done("kr_open", dt.date(2026, 9, 14)) is False
-
-
-def test_one_failing_window_does_not_block_the_other(isolated_state, monkeypatch):
-    """겹친 창 하나가 실패해도 나머지는 돌아야 한다."""
-    ran: list[str] = []
-
-    def selective(w):
-        if w.name == "kr_open":
-            raise RuntimeError("야후 조회 실패")
-        ran.append(w.name)
-
-    monkeypatch.setattr(monitor, "_run_window", selective)
-    monitor.run_due_windows(now_utc=KR_OPEN_TIME)
-
-    assert "crypto_2" in ran
-    assert sm.is_window_done("crypto_2", dt.date(2026, 9, 14)) is True
-    assert sm.is_window_done("kr_open", dt.date(2026, 9, 14)) is False
+    monitor.run_due_windows(now_utc=CLOSE_TIME)
+    assert extras == ["kr_close"]
