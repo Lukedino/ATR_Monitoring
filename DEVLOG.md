@@ -326,3 +326,11 @@ python monitor.py
 - **설정**: 서비스계정과 공유된 Drive 폴더에 `stop_levels.json` 을 한 번 만들고(SA 는 새 파일 생성 불가 — 저장 쿼터 0) 파일 ID 를 Secret `GDRIVE_STATE_FILE_ID` 로 등록, 최초 1회 현재 내용을 시드
 - 공개 히스토리의 과거 `data/stop_levels.json` 은 `git filter-repo` 로 제거(force push). 테스트 `python -m pytest tests/`
 
+## 2026-09-17 — 예약 실행을 Personal Assistant 디스패처로 이관
+
+- **문제**: GitHub `schedule:` 크론 배달률이 18%(09-12) → 7%(09-15) 로 무너졌다. 하루 84틱을 걸어도 ~6회만 오고 시각이 무작위라, 창(25~30분) 안에 틱이 하나도 안 떨어지는 날이 잦았다. 09-15 에 7.65시간 공백으로 `kr_close` 종가 요약 1건이 실제로 유실됐다(손절 체크는 "배달된 런마다 전 종목" 안전망으로 무사).
+- **해결**: Personal Assistant 의 tick 디스패처(Cloud Scheduler 5분 → `workflow_dispatch`)가 **창마다 창 시작 직후 1회** `job=auto` 로 깨운다. 슬롯은 `dispatcher_schedules.py` 가 `market_hours.ALL_WINDOWS` 에서 생성한다 — 창 시작을 5분 격자로 올리고, 겨울·여름 프로브 주로 UTC 변환. US 창은 EDT/EST 두 변형(어느 날이든 하나만 창 안, 다른 하나는 안전망 stop_check 만 하고 끝), `kr_open`+`crypto_2` 는 같은 00:10Z 라 한 항목. 결과 18개 항목 = `dispatcher_schedules.json` → PA `apps/orchestrator/config/gha-schedules.json` 에 복사.
+- **워크플로**: `schedule:` 제거(`# (was) cron:` 주석으로 보존), `workflow_dispatch` 와 `GHA_JOB=auto` 폴백 유지. `tests/test_workflow_cron.py`(84틱 불변식) → `tests/test_workflow_trigger.py`·`tests/test_dispatcher_schedules.py`.
+- **창을 고칠 때**: `market_hours.ALL_WINDOWS` 수정 → `python dispatcher_schedules.py` → `python -m pytest tests` → `dispatcher_schedules.json` 을 PA 설정에 반영하고 PA 를 배포(슬롯 ±10분 피해서). 실행기(`run_due_windows`)는 바꿀 것 없다.
+- **되돌리기**: PA 쪽 `atr-*` 항목 `enabled:false` + 여기 `schedule:` 블록 복원(`# (was) cron:` 값).
+

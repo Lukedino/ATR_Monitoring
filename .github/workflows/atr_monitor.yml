@@ -3,23 +3,21 @@ name: ATR Trailing Stop Monitor
 # ─────────────────────────────────────────────────────────────
 # 트리거
 #
-# GHA schedule 이벤트는 배달률이 18% 다(2026-09-12 실측, 3월부터 13주 연속 하락).
-# GitHub 문서도 "some queued jobs may be dropped" 라고 명시한다. 그래서 "정각 실행" 을
-# 전제하지 않고, 창(window) 안에서 오늘 아직 안 했으면 하는 멱등 구조로 간다.
-# 무슨 작업을 할지는 크론이 아니라 market_hours.due_windows() 가 정한다.
+# 예약 실행은 Personal Assistant 의 tick 디스패처가 맡는다(2026-09-17 이관).
+#   Cloud Scheduler(5분) → PA apps/orchestrator/config/gha-schedules.json 의 `atr-*` 항목
+#   → 이 워크플로를 workflow_dispatch(job=auto) 로 깨운다. 창(market_hours.ALL_WINDOWS)마다
+#   창 시작 직후 1회. 항목은 dispatcher_schedules.py 가 창 정의에서 생성한다 — 창을 고치면
+#   `python dispatcher_schedules.py` 로 JSON 을 다시 만들어 PA 설정에 반영한다.
 #
-# 크론 1개: 10분 간격, 창이 걸리는 UTC 시에만, 비인기 분(:03/:13/…).
-#   - 분: GitHub 문서가 "High load times include the start of every hour" 라 하고,
-#         실측에서도 :30 이 :00 보다 37% 더 도착했다 → 라운드 시각을 피한다.
-#   - 시: market_hours 의 창 정의에서 생성했다(서머타임 양쪽 상태 포함). 창을 고치면
-#         이 목록도 다시 생성해야 한다 — tests/test_workflow_cron.py 가 대조한다.
-# 하루 84틱(기존 48). 창 밖 틱은 파이썬이 "실행할 창 없음" 으로 즉시 종료한다.
+# GitHub `schedule:` 크론은 쓰지 않는다. 배달률이 18% → 7% 로 무너져(2026-09-12·15 실측,
+# 하루 84틱 중 ~6회 도착) 창 안에 틱이 하나도 안 떨어지는 날이 잦았고, 09-15 에 kr_close
+# 종가 요약이 실제로 유실됐다. 되돌리려면 PA 쪽 `atr-*` 항목을 enabled:false 로 바꾸고
+# 아래 `# (was) cron:` 을 schedule: 블록으로 복원한다.
 # ─────────────────────────────────────────────────────────────
 on:
-  schedule:
-    - cron: '3,13,23,33,43,53 0,6,8-10,12-15,18-21,23 * * *'
+  # (was) cron: '3,13,23,33,43,53 0,6,8-10,12-15,18-21,23 * * *'   ← 2026-09-17 까지의 GitHub 예약. 지금은 PA 디스패처.
 
-  # 수동 실행 (Actions 탭에서 직접 트리거)
+  # 수동 실행 (Actions 탭에서 직접 트리거) + PA 디스패처(job=auto)
   workflow_dispatch:
     inputs:
       job:
@@ -77,8 +75,8 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "GHA_JOB=${{ inputs.job }}" >> $GITHUB_ENV
           else
-            # 예약 실행은 전부 창 판정에 맡긴다. 크론 표현식 문자열로 작업 종류를
-            # 고르던 방식은 표현식이 바뀔 때마다 조용히 어긋났다(커밋 153436e).
+            # workflow_dispatch 가 아닌 이벤트(수동 push 등 예외)는 창 판정에 맡긴다. 크론 문자열로
+            # 작업 종류를 고르던 방식은 표현식이 바뀔 때마다 조용히 어긋났다(커밋 153436e).
             echo "GHA_JOB=auto" >> $GITHUB_ENV
           fi
 
