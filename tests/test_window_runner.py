@@ -121,6 +121,21 @@ def test_failed_extra_is_not_marked_done(isolated_state, monkeypatch):
     assert sm.is_window_done("kr_close", D) is False
 
 
+def test_failed_stop_check_leaves_the_brief_window_open_for_retry(isolated_state, monkeypatch):
+    """stop_check 이 실패하면 요약할 데이터가 없다 — 그 창을 완료로 적으면 안 된다.
+
+    2026-09-17 디스패처 이관 리뷰에서 찾은 선재 결함: result=None 이면 _run_window_extra 가 조용히
+    아무것도 안 하고 호출자는 완료 표시를 남겨, 창 안 수동 재시도(job=auto)도 "이미 완료" 로 거부됐다.
+    """
+    def boom(symbols=None):
+        raise RuntimeError("야후 조회 실패")
+    monkeypatch.setattr(monitor, "job_stop_check", boom)
+    monkeypatch.setattr(monitor, "_send_daily_brief", lambda w, r: pytest.fail("데이터 없이 요약을 보내면 안 된다"))
+
+    monitor.run_due_windows(now_utc=CLOSE_TIME)
+    assert sm.is_window_done("kr_close", D) is False
+
+
 def test_failed_stop_check_does_not_block_the_extra(isolated_state, monkeypatch):
     """손절 체크가 실패해도 요약 시도는 해야 한다."""
     extras: list = []

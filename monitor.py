@@ -375,7 +375,11 @@ def _run_window_extra(window, result) -> None:
     if window.action == "weekly_report":
         (job_kr_daily_report if window.market == "KR" else job_us_daily_report)()
         return
-    if window.brief and result is not None:
+    if window.brief:
+        if result is None:
+            # stop_check 이 실패해 요약할 데이터가 없다. 조용히 넘어가면 호출자가 창을 완료로 적어
+            # 그날 요약이 영영 안 가고 창 안 수동 재시도도 "이미 완료" 로 거부된다 — 실패로 올린다.
+            raise RuntimeError("전 종목 stop_check 실패로 요약 데이터 없음")
         _send_daily_brief(window, result)
 
 
