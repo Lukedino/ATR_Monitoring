@@ -1,0 +1,218 @@
+[
+  {
+    "id": "atr-kr-open-crypto-2",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "10 0 * * *",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 kr_open(09:07 KST), crypto_2(09:07 KST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-us-after-close-est",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "30 0 * * 2-6",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 us_after_close(19:30 ET EST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-kr-late",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "0 6 * * 1-5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 kr_late(14:57 KST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-crypto-3",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "10 6 * * *",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 crypto_3(15:07 KST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-kr-close",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "35 6 * * 1-5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 kr_close(15:35 KST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-kr-after",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "0 8 * * 1-5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 kr_after(17:00 KST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-kr-weekly",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "0 9 * * 5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 kr_weekly(18:00 KST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-kr-after-close",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "30 10 * * 1-5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 kr_after_close(19:30 KST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-crypto-4",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "10 12 * * *",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 crypto_4(21:07 KST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-us-open-edt",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "40 13 * * 1-5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 us_open(09:37 ET EDT) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-us-open-est",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "40 14 * * 1-5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 us_open(09:37 ET EST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-crypto-1",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "10 18 * * *",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 crypto_1(03:07 KST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-us-late-edt",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "30 19 * * 1-5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 us_late(15:27 ET EDT) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-us-close-edt",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "5 20 * * 1-5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 us_close(16:05 ET EDT) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-us-late-est",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "30 20 * * 1-5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 us_late(15:27 ET EST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-us-close-est",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "5 21 * * 1-5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 us_close(16:05 ET EST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-us-weekly",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "0 23 * * 5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 us_weekly(08:00 KST) 시작 직후 1회 · job=auto"
+  },
+  {
+    "id": "atr-us-after-close-edt",
+    "repo": "Lukedino/ATR_Monitoring",
+    "workflow": "atr_monitor.yml",
+    "ref": "main",
+    "cron": "30 23 * * 1-5",
+    "inputs": {
+      "job": "auto"
+    },
+    "enabled": true,
+    "note": "ATR 창 us_after_close(19:30 ET EDT) 시작 직후 1회 · job=auto"
+  }
+]
