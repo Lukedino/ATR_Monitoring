@@ -63,6 +63,17 @@ def test_long_name_lists_are_truncated():
     assert out.count("TCK") <= tg.BRIEF_NAME_LIMIT
 
 
+def test_names_are_listed_one_per_line():
+    """한 줄에 쉼표로 이으면 긴 종목명(회사명 | 티커)이 뒤엉켜 읽히지 않는다 — 종목마다 한 줄."""
+    many = [_ch(f"TCK{i}", -float(i + 1)) for i in range(7)]
+    lines = tg.fmt_daily_brief("US 종가 요약", "2026-09-14", many).split("\n")
+    head = lines.index("🔴 손절 이탈 7")
+    items = lines[head + 1: head + 1 + tg.BRIEF_NAME_LIMIT]
+    assert all(l.startswith("  • ") and l.count("TCK") == 1 for l in items)
+    assert "TCK6" in items[0]                # Stop 거리가 가까운(더 깊이 이탈한) 순
+    assert lines[head + 1 + tg.BRIEF_NAME_LIMIT] == "  … 외 2개"
+
+
 def test_clean_day_omits_empty_lines():
     """이탈·근접이 없으면 그 줄은 빼서 더 짧게."""
     out = tg.fmt_daily_brief("US 종가 요약", "2026-09-14", [SAFE])

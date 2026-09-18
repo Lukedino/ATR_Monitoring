@@ -431,12 +431,17 @@ def fmt_chandelier_report(chandelier_results: list) -> str:
 BRIEF_NAME_LIMIT = 5
 
 
-def _brief_names(results: list) -> str:
-    """Stop 거리가 가까운 순으로 몇 개만 이름을 남기고 나머지는 접는다."""
+def _brief_names(results: list) -> list:
+    """Stop 거리가 가까운 순으로 몇 개만 이름을 남기고 나머지는 접는다. 종목마다 한 줄.
+
+    쉼표로 한 줄에 이으면 "회사명 | 티커" 가 길어 어디서 끊기는지 읽히지 않는다.
+    """
     ordered = sorted(results, key=lambda r: r.dist_to_stop_pct)
-    shown   = [fmt_symbol(r.symbol) for r in ordered[:BRIEF_NAME_LIMIT]]
-    rest    = len(ordered) - len(shown)
-    return ", ".join(shown) + (f" 외 {rest}개" if rest > 0 else "")
+    lines   = [f"  • {fmt_symbol(r.symbol)}" for r in ordered[:BRIEF_NAME_LIMIT]]
+    rest    = len(ordered) - len(lines)
+    if rest > 0:
+        lines.append(f"  … 외 {rest}개")
+    return lines
 
 
 def fmt_daily_brief(
@@ -459,9 +464,11 @@ def fmt_daily_brief(
         f"📅 {data_date} 기준 · 보유 {len(chandelier_results)}종목",
     ]
     if breached:
-        lines.append(f"🔴 손절 이탈 {len(breached)} — {_brief_names(breached)}")
+        lines.append(f"🔴 손절 이탈 {len(breached)}")
+        lines.extend(_brief_names(breached))
     if near:
-        lines.append(f"🟡 손절 근접 {len(near)} — {_brief_names(near)}")
+        lines.append(f"🟡 손절 근접 {len(near)}")
+        lines.extend(_brief_names(near))
     lines.append(f"🟢 여유 {len(safe)}")
 
     tail = []
