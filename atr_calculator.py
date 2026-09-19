@@ -15,6 +15,7 @@ Chandelier Exit (ATR Trailing Stop):
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import pandas as pd
@@ -26,6 +27,9 @@ from config import (
     ATR_ALERT_MULTIPLIER,
     get_atr_multiple,
 )
+
+# 모듈 로거. 예전엔 선언 없이 logger.warning 을 불러 KR 가격제한폭 가드가 NameError 를 냈다(ATR-01).
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────

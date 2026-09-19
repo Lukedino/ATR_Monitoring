@@ -87,56 +87,60 @@ def _is_configured() -> bool:
 # 핵심 전송 함수
 # ─────────────────────────────────────────────────────────────
 
+def _describe(exc: Exception) -> str:
+    """예외를 로그에 남길 때 URL 을 빼고 남긴다 — requests 예외 문자열에는 봇 토큰이 든 URL 이 들어 있다."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return f"{type(exc).__name__}" + (f" HTTP {status}" if status else "")
+
+
+SEND_ATTEMPTS = 3
+
+
 def send_message(text: str, parse_mode: str = "Markdown") -> bool:
     """
-    텍스트 메시지를 전송합니다.
+    텍스트 메시지를 전송합니다. 성공 여부(bool)를 돌려주며 **호출자는 반드시 확인해야 한다** —
+    실패한 알림을 '보냄' 으로 기록하면 다음 실행이 중복이라며 건너뛴다.
 
-    Parameters
-    ----------
-    text       : 전송할 텍스트 (Markdown 또는 HTML)
-    parse_mode : "Markdown" | "HTML" | "" (기본 Markdown)
-
-    Returns
-    -------
-    성공 여부 (bool)
+    429(레이트리밋)·5xx·네트워크 오류는 최대 3회까지 다시 시도한다. 장 전체가 움직여 알림이
+    몰리는 날이 곧 레이트리밋이 나기 쉬운 날이고, 알림이 가장 필요한 날이다.
+    400 은 Markdown 파싱 오류로 보고 서식을 뺀 평문으로 한 번 더 보낸다.
     """
     if not _is_configured():
         return False
 
-    payload = {
-        "chat_id":    TELEGRAM_CHAT_ID,
-        "text":       text,
-        "parse_mode": parse_mode,
-    }
-    try:
-        resp = requests.post(_url("sendMessage"), json=payload, timeout=TIMEOUT_SEC)
-        resp.raise_for_status()
-        logger.info("텔레그램 메시지 전송 성공")
-        return True
-    except requests.exceptions.HTTPError as exc:
-        # 400 = Markdown 파싱 오류 → plain text로 재시도
-        if exc.response is not None and exc.response.status_code == 400 and parse_mode:
-            # 공개 저장소의 Actions 로그는 누구나 열람 가능 → 메시지 원문(계좌명·진입가 포함)은
-            # 남기지 않고 길이만 기록한다 (2026-08-27 보안점검)
-            logger.warning("Markdown 파싱 실패 (400) — plain text 재시도 (원문 %d자)", len(text))
-            plain = text.replace("*", "").replace("_", "").replace("`", "")
-            try:
-                resp2 = requests.post(
-                    _url("sendMessage"),
-                    json={"chat_id": TELEGRAM_CHAT_ID, "text": plain},
-                    timeout=TIMEOUT_SEC,
-                )
-                resp2.raise_for_status()
-                logger.info("텔레그램 메시지 전송 성공 (plain text 폴백)")
-                return True
-            except requests.RequestException as exc2:
-                logger.error("텔레그램 메시지 전송 실패 (폴백): %s", exc2)
-                return False
-        logger.error("텔레그램 메시지 전송 실패: %s", exc)
-        return False
-    except requests.RequestException as exc:
-        logger.error("텔레그램 메시지 전송 실패: %s", exc)
-        return False
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+
+    for attempt in range(1, SEND_ATTEMPTS + 1):
+        wait = 2 ** attempt
+        try:
+            resp = requests.post(_url("sendMessage"), json=payload, timeout=TIMEOUT_SEC)
+            status = resp.status_code
+            if status == 400 and "parse_mode" in payload:
+                # 공개 저장소의 Actions 로그는 누구나 열람 가능 → 메시지 원문(계좌명·진입가 포함)은
+                # 남기지 않고 길이만 기록한다 (2026-08-27 보안점검)
+                logger.warning("Markdown 파싱 실패 (400) — plain text 재시도 (원문 %d자)", len(text))
+                payload = {"chat_id": TELEGRAM_CHAT_ID,
+                           "text": text.replace("*", "").replace("_", "").replace("`", "")}
+                continue
+            if status == 429 or status >= 500:
+                try:
+                    wait = int(resp.json().get("parameters", {}).get("retry_after", wait))
+                except (ValueError, AttributeError, TypeError):
+                    pass
+                logger.warning("텔레그램 일시 오류 HTTP %s — %d초 뒤 재시도 (%d/%d)",
+                               status, wait, attempt, SEND_ATTEMPTS)
+                time.sleep(min(wait, 30))
+                continue
+            resp.raise_for_status()
+            logger.info("텔레그램 메시지 전송 성공")
+            return True
+        except requests.RequestException as exc:
+            logger.warning("텔레그램 전송 오류 %s — 재시도 (%d/%d)", _describe(exc), attempt, SEND_ATTEMPTS)
+            time.sleep(min(wait, 30))
+    logger.error("텔레그램 메시지 전송 실패 — %d회 시도", SEND_ATTEMPTS)
+    return False
 
 
 def send_photo(image_bytes: bytes, caption: str = "") -> bool:

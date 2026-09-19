@@ -38,6 +38,7 @@ import time
 
 import schedule
 
+import config as _config
 from config import (
     ALL_SYMBOLS,
     KR_STOCK_NAMES,
@@ -122,6 +123,40 @@ class StopCheckResult:
     data_date:     str
 
 
+# ── 실행 중 생긴 문제 모음 ──────────────────────────────────────────────────
+# 손절 감시에서 가장 위험한 것은 '실패했는데 초록색으로 끝나는 실행' 이다(2026-09-19 검토 ATR-02~05).
+# 종목 하나의 예외, 시세 수집 전멸, 텔레그램 전송 실패를 여기 모았다가 실행 끝에
+# 소유자에게 한 번 알리고 종료코드 1 로 끝낸다 — Actions 목록에 빨갛게 남고 운영 감시도 잡는다.
+_problems: list[str] = []
+
+# 시세를 받은 종목 비율이 이보다 낮으면 그 실행의 '이상 없음' 은 믿을 수 없다.
+MIN_COLLECTION_RATIO = 0.8
+
+
+def _portfolio_problem() -> str | None:
+    """감시 대상 목록을 믿을 수 있는지. 상태 파일은 로드 실패 시 중단하는데(fail-closed)
+    포트폴리오는 조용히 예시 종목으로 넘어가던 비대칭을 없앤다(ATR-05)."""
+    if not ALL_SYMBOLS:
+        return "감시 대상 0종목 — 포트폴리오 시트가 비었거나 헤더(Ticker·종목·구분)가 바뀌었습니다"
+    if _config.DRIVE_PORTFOLIO_CONFIGURED and _config.PORTFOLIO_SOURCE != "drive":
+        return ("Drive 포트폴리오를 읽지 못해 다른 목록(" + _config.PORTFOLIO_SOURCE
+                + f", {len(ALL_SYMBOLS)}종목)으로 넘어갔습니다 — 실보유를 감시하지 못합니다")
+    return None
+
+
+def _note_problem(message: str) -> None:
+    logger.error("실행 문제: %s", message)
+    _problems.append(message)
+
+
+def _send_chart_quietly(symbol, df, stop, caption: str) -> None:
+    """차트는 부속물이다. 차트 버그가 텍스트 알림과 그 기록을 막으면 안 된다."""
+    try:
+        tg.send_photo(plot_atr_chart(symbol, df, registered_stop=stop, as_bytes=True), caption=caption)
+    except Exception as exc:
+        logger.warning("차트 전송 실패 — 텍스트 알림은 이미 나갔다: %s (%s)", symbol, type(exc).__name__)
+
+
 def job_stop_check(symbols: list[str] | None = None) -> None:
     """
     [30분 주기] Chandelier Stop 갱신 체크.
@@ -141,55 +176,75 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
     updated_count = 0
 
     chandelier_list = []
+    failed: list[str] = []
+    unsent = 0
     for symbol, df in ohlcv_map.items():
         if df.empty:
             continue
+        # 종목 하나의 예외(데이터 이상, 계산·포맷 버그)가 뒤 종목 전부를 멈추면 안 된다(ATR-02).
+        try:
+            ch = calc_chandelier_stop(symbol, df, ATR_PERIOD)
+            if ch is None:
+                continue
+            chandelier_list.append(ch)
 
-        ch = calc_chandelier_stop(symbol, df, ATR_PERIOD)
-        if ch is None:
-            continue
-        chandelier_list.append(ch)
-
-        # 즉각 트리거 체크
-        rec          = stop_recs.get(symbol)
-        current_stop = rec.current_stop if rec else None
-        trigger      = check_immediate_triggers(symbol, df, current_stop)
-        if trigger.has_trigger:
-            if not _is_market_active_for_triggers(symbol):
-                logger.debug("트리거 스킵 (장 마감): %s — %s", symbol, trigger.triggers)
-            else:
-                close = float(df["Close"].iloc[-1])
-                if should_send_trigger_alert(symbol, trigger.triggers, close, current_stop):
-                    tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop))
-                    chart = plot_atr_chart(symbol, df, registered_stop=current_stop, as_bytes=True)
-                    tg.send_photo(chart, caption=f"긴급: {fmt_symbol(symbol)} 트리거 감지")
-                    mark_trigger_sent(symbol, trigger.triggers, close, current_stop)
-                    logger.warning("트리거 감지 알림: %s — %s", symbol, trigger.triggers)
+            # 즉각 트리거 체크
+            rec          = stop_recs.get(symbol)
+            current_stop = rec.current_stop if rec else None
+            trigger      = check_immediate_triggers(symbol, df, current_stop)
+            if trigger.has_trigger:
+                if not _is_market_active_for_triggers(symbol):
+                    logger.debug("트리거 스킵 (장 마감): %s — %s", symbol, trigger.triggers)
                 else:
-                    logger.info("트리거 중복 스킵: %s (동일 조건 발송됨)", symbol)
+                    close = float(df["Close"].iloc[-1])
+                    if should_send_trigger_alert(symbol, trigger.triggers, close, current_stop):
+                        # 전송에 성공했을 때만 '보냄' 으로 적는다. 실패를 적어 두면 텔레그램이
+                        # 회복된 다음 실행이 '중복' 이라며 건너뛴다(ATR-03).
+                        if tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop)):
+                            mark_trigger_sent(symbol, trigger.triggers, close, current_stop)
+                            _send_chart_quietly(symbol, df, current_stop,
+                                                f"긴급: {fmt_symbol(symbol)} 트리거 감지")
+                            logger.warning("트리거 감지 알림: %s — %s", symbol, trigger.triggers)
+                        else:
+                            unsent += 1
+                    else:
+                        logger.info("트리거 중복 스킵: %s (동일 조건 발송됨)", symbol)
 
-        # Stop 갱신 (등록된 포지션만)
-        if rec is None:
-            continue
+            # Stop 갱신 (등록된 포지션만)
+            if rec is None:
+                continue
 
-        result = update_stop(
-            symbol        = symbol,
-            new_stop      = ch.stop_level,
-            current_close = ch.current_close,
-            new_hh        = ch.highest_high,
-        )
-        if result.updated:
-            updated_count += 1
-            tg.send_message(tg.fmt_stop_update(result))
-            chart = plot_atr_chart(symbol, df, registered_stop=result.new_stop, as_bytes=True)
-            tg.send_photo(
-                chart,
-                caption=f"{symbol} Stop 갱신: {result.prev_stop:,.2f} -> {result.new_stop:,.2f}",
-            )
-            logger.info("Stop 갱신 알림 전송: %s", symbol)
+            stop_args = dict(symbol=symbol, new_stop=ch.stop_level,
+                             current_close=ch.current_close, new_hh=ch.highest_high)
+            pending = update_stop(**stop_args, commit=False)
+            if pending.updated:
+                # 알림이 나간 뒤에 저장한다. 순서가 반대면 전송 실패 시 '지정가 갱신 필요' 가 영영 사라진다.
+                if tg.send_message(tg.fmt_stop_update(pending)):
+                    result = update_stop(**stop_args)
+                    updated_count += 1
+                    _send_chart_quietly(symbol, df, result.new_stop,
+                                        f"{symbol} Stop 갱신: {result.prev_stop:,.2f} -> {result.new_stop:,.2f}")
+                    logger.info("Stop 갱신 알림 전송: %s", symbol)
+                else:
+                    unsent += 1
+        except Exception as exc:
+            failed.append(symbol)
+            logger.error("종목 처리 실패 — 다음 종목으로 계속: %s (%s)", symbol, type(exc).__name__)
+
+    if failed:
+        _note_problem(f"종목 처리 실패 {len(failed)}/{len(ohlcv_map)}")
+    if unsent:
+        _note_problem(f"텔레그램 전송 실패 {unsent}건 — 기록하지 않았으므로 다음 실행이 다시 보낸다")
 
     if not updated_count:
         logger.info("Stop 갱신 없음 (전 종목 유지)")
+
+    # 시세를 못 받은 종목이 많으면 '트리거 없음' 은 '못 봤다' 는 뜻이다(ATR-04). 받은 종목은 위에서
+    # 이미 처리했다. 여기서 실패로 올리면 종가 요약 창이 완료로 적히지 않아 다음 실행이 다시 시도한다.
+    collected = sum(1 for df in ohlcv_map.values() if not df.empty)
+    if syms and collected < len(syms) * MIN_COLLECTION_RATIO:
+        _note_problem(f"시세 수집 {collected}/{len(syms)}")
+        raise RuntimeError(f"시세 수집 부족 {collected}/{len(syms)}")
 
     logger.info("Stop 갱신 체크 완료")
     return StopCheckResult(
@@ -307,25 +362,38 @@ def job_trigger_check() -> None:
     stop_recs = load_stops()
     found     = False
 
+    failed: list[str] = []
+    unsent = 0
     for symbol, df in ohlcv_map.items():
         if df.empty or len(df) < 22:
             continue
-        rec          = stop_recs.get(symbol)
-        current_stop = rec.current_stop if rec else None
-        trigger      = check_immediate_triggers(symbol, df, current_stop)
-        if trigger.has_trigger:
+        try:
+            rec          = stop_recs.get(symbol)
+            current_stop = rec.current_stop if rec else None
+            trigger      = check_immediate_triggers(symbol, df, current_stop)
+            if not trigger.has_trigger:
+                continue
             if not _is_market_active_for_triggers(symbol):
                 logger.debug("트리거 스킵 (장 마감): %s — %s", symbol, trigger.triggers)
                 continue
             close = float(df["Close"].iloc[-1])
             if should_send_trigger_alert(symbol, trigger.triggers, close, current_stop):
                 found = True
-                tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop))
-                chart = plot_atr_chart(symbol, df, registered_stop=current_stop, as_bytes=True)
-                tg.send_photo(chart, caption=f"긴급: {fmt_symbol(symbol)}")
-                mark_trigger_sent(symbol, trigger.triggers, close, current_stop)
+                if tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop)):
+                    mark_trigger_sent(symbol, trigger.triggers, close, current_stop)
+                    _send_chart_quietly(symbol, df, current_stop, f"긴급: {fmt_symbol(symbol)}")
+                else:
+                    unsent += 1
             else:
                 logger.info("트리거 중복 스킵: %s (동일 조건 발송됨)", symbol)
+        except Exception as exc:
+            failed.append(symbol)
+            logger.error("종목 처리 실패 — 다음 종목으로 계속: %s (%s)", symbol, type(exc).__name__)
+
+    if failed:
+        _note_problem(f"종목 처리 실패 {len(failed)}/{len(ohlcv_map)}")
+    if unsent:
+        _note_problem(f"텔레그램 전송 실패 {unsent}건 — 기록하지 않았으므로 다음 실행이 다시 보낸다")
 
     if not found:
         logger.info("트리거 없음")
@@ -361,13 +429,16 @@ def _send_daily_brief(window, result: StopCheckResult) -> None:
         # 요약의 곁가지일 뿐이라 실패해도 본문은 보낸다
         logger.warning("스파이크 집계 실패 — 요약에서 생략: %s", exc)
 
-    tg.send_message(tg.fmt_daily_brief(
+    sent = tg.send_message(tg.fmt_daily_brief(
         f"{window.market} 종가 요약",
         result.data_date,
         result.chandelier,
         spike_count   = spike_count,
         updated_count = result.updated_count,
     ))
+    if not sent:
+        # 호출자가 창을 완료로 적지 않게 실패로 올린다(ATR-03) — 다음 실행이 다시 보낸다.
+        raise RuntimeError("종가 요약 전송 실패")
 
 
 def _run_window_extra(window, result) -> None:
@@ -400,8 +471,8 @@ def run_due_windows(now_utc=None) -> None:
     try:
         result = job_stop_check()
     except Exception as exc:
-        # 손절 체크가 실패해도 요약·리포트 시도는 막지 않는다
-        logger.error("전 종목 stop_check 실패: %s", exc)
+        # 손절 체크가 실패해도 요약·리포트 시도는 막지 않는다. 다만 조용히 넘기지는 않는다.
+        _note_problem(f"전 종목 stop_check 실패: {type(exc).__name__}: {exc}")
 
     for window in market_hours.due_windows(now):
         if window.action == "stop_check" and not window.brief:
@@ -417,7 +488,7 @@ def run_due_windows(now_utc=None) -> None:
             _run_window_extra(window, result)
         except Exception as exc:
             # 실패를 완료로 적으면 그날 그 창은 영영 안 간다 → 표시하지 않고 재시도에 맡긴다
-            logger.error("창 추가 작업 실패 — 완료 표시 안 함: %s: %s", window.name, exc)
+            _note_problem(f"창 추가 작업 실패({window.name}) — 완료 표시 안 함: {type(exc).__name__}: {exc}")
             continue
 
         mark_window_done(window.name, local_date)
@@ -449,6 +520,13 @@ def run_github_actions_mode() -> None:
         logger.error("알 수 없는 GHA_JOB: %s", job_name)
         sys.exit(1)
 
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        problem = _portfolio_problem()
+        if problem:
+            logger.error("포트폴리오 점검 실패: %s", problem)
+            tg.send_message(f"⚠️ ATR 모니터 중단 — {problem}", parse_mode="")
+            sys.exit(1)
+
     # 2026-08-30: 상태 파일(stop_levels.json)은 repo 커밋 대신 Drive 에 보관 — 시작 시 pull, 종료 시 push.
     # pull 실패 = 빈 기억으로 돌면 전 종목 알림 스팸이 되므로 실행을 중단하고 Telegram 으로 알린다.
     try:
@@ -471,6 +549,12 @@ def run_github_actions_mode() -> None:
                 logger.error("상태 파일 저장 실패: %s", e)
                 tg.send_message(f"⚠️ ATR 상태 파일 저장 실패 — 다음 실행에서 알림이 중복될 수 있음: {e}")
                 raise
+    if _problems:
+        # 상태는 위에서 이미 저장했다. 실패를 초록색으로 끝내지 않는다.
+        lines = "\n".join(f"• {problem}" for problem in _problems[:10])
+        tg.send_message(f"⚠️ ATR 모니터 — 이번 실행에 문제가 있었습니다\n{lines}", parse_mode="")
+        logger.error("문제가 있었던 실행 — 종료코드 1 (%d건)", len(_problems))
+        sys.exit(1)
     logger.info("GitHub Actions 완료")
 
 

@@ -192,10 +192,23 @@ def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
         return None
 
 
+def _portfolio_source(drive_portfolio, stock_list_env: str) -> str:
+    """어디서 온 목록으로 도는지. 빈 시트·헤더가 바뀐 시트({"포트폴리오": []})는 '로드됨' 이 아니다 —
+    예전에는 dict 가 truthy 라 0종목으로 조용히 성공했다(ATR-05)."""
+    if drive_portfolio and any(drive_portfolio.values()):
+        return "drive"
+    return "stock_list" if stock_list_env else "fallback"
+
+
 _stock_list_env  = os.getenv("STOCK_LIST", "")
 _drive_portfolio = _load_portfolio_from_drive()
 
-if _drive_portfolio:
+# monitor 가 GitHub Actions 에서 확인한다: Drive 를 쓰도록 설정됐는데 다른 출처로 돌고 있으면
+# 실보유 대신 낡은 목록·예시 5종목을 감시하는 것이다.
+DRIVE_PORTFOLIO_CONFIGURED: bool = bool(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")) and bool(os.getenv("GDRIVE_PORTFOLIO_FILE_ID"))
+PORTFOLIO_SOURCE: str = _portfolio_source(_drive_portfolio, _stock_list_env)
+
+if PORTFOLIO_SOURCE == "drive":
     PORTFOLIO: dict[str, list[str]] = _drive_portfolio
 elif _stock_list_env:
     try:

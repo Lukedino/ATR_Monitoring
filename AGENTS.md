@@ -1,5 +1,7 @@
 > 이 문서는 Codex 등 외부 에이전트용 안내문이다. 2026-09-18 작성.
 
+> 2026-09-20: 아래 7절의 "알림 누락 경로"·"조용한 fallback" 중 다수가 수정됐다 — 종목별 예외 격리, 전송 성공 후에만 기록, Stop 은 알림 전송 뒤 저장(`update_stop(commit=False)`), 수집률 80% 미만·포트폴리오 출처 이상은 실패 처리, `send_message` 재시도, 문제가 있던 실행은 종료코드 1. 상세는 `DEVLOG.md` 2026-09-20 절, 회귀 테스트는 `tests/test_silent_failures.py`.
+
 # AGENTS.md — Portfolio ATR Monitor (읽기 전용 리뷰 안내)
 
 ## 1. 요약

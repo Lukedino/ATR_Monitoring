@@ -186,9 +186,14 @@ def update_stop(
     new_stop:      float,
     current_close: float,
     new_hh:        float | None = None,
+    commit:        bool = True,
 ) -> UpdateResult:
     """
     Trailing Stop 갱신 여부를 판단하고 적용합니다.
+
+    commit=False 면 판정만 하고 저장하지 않는다. 호출자는 '지정가 갱신 필요' 알림 전송이
+    성공한 뒤 commit=True 로 다시 불러 저장한다 — 저장을 먼저 하면 전송 실패 시 다음 실행은
+    new == current 라 그 알림이 영구히 사라진다(ATR-03).
 
     원칙: new_stop > current_stop 일 때만 갱신 (하향 절대 불가).
 
@@ -215,6 +220,12 @@ def update_stop(
         )
 
     prev_stop = rec.current_stop
+    if new_stop > prev_stop and not commit:
+        return UpdateResult(
+            symbol=symbol, updated=True,
+            prev_stop=prev_stop, new_stop=round(new_stop, 4),
+            current_close=current_close, action="PENDING",
+        )
     if new_stop > prev_stop:
         rec.current_stop = round(new_stop, 4)
         rec.last_updated = _now()
