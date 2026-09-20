@@ -369,8 +369,9 @@ def should_send_trigger_alert(
         result = set()
         for t in tlist:
             parts = t.split()
-            if len(parts) >= 2 and parts[1] in ("DOWN", "UP"):
-                result.add(f"{parts[0]} {parts[1]}")   # e.g. "SURGE DOWN", "GAP UP"
+            if len(parts) >= 2 and (parts[1] in ("DOWN", "UP") or parts[0] == "STOP"):
+                # "STOP NEAR" → "STOP BREACH" 전환은 같은 날이어도 다시 알려야 한다.
+                result.add(f"{parts[0]} {parts[1]}")   # e.g. "SURGE DOWN", "GAP UP", "STOP BREACH"
             else:
                 result.add(parts[0])                   # e.g. "VOLUME", "STOP"
         return result

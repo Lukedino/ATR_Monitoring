@@ -355,7 +355,14 @@ def fmt_trigger_alert(symbol: str, triggers: list[str], close: float, stop: floa
     has_down      = any(t.startswith("SURGE DOWN") or t.startswith("GAP DOWN") for t in triggers)
     has_up        = any(t.startswith("SURGE +") or t.startswith("GAP UP") for t in triggers)
 
-    if has_stop and has_down:
+    has_breach    = any(t.startswith("STOP BREACH") for t in triggers)
+    has_mismatch  = any(t.startswith("STOP MISMATCH") for t in triggers)
+
+    if has_mismatch:
+        action = "🛠 등록 Stop 점검! 현재가와 단위가 맞지 않습니다(액면분할 등) — Stop 재등록 필요"
+    elif has_breach:
+        action = "🛑 손절선 이탈! 종가가 등록 Stop 아래입니다 — 증권사 지정가 체결 여부 확인, 미체결이면 손절 실행"
+    elif has_stop and has_down:
         action = "🔴 즉각 손절 검토! Stop 근접 + 추가 하락 감지 — 포지션 축소 우선"
     elif has_stop:
         action = "🔴 매도 준비! ATR Stop 도달 임박 — 손절 기준 재확인"

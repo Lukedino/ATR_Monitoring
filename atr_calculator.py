@@ -31,6 +31,9 @@ from config import (
 # 모듈 로거. 예전엔 선언 없이 logger.warning 을 불러 KR 가격제한폭 가드가 NameError 를 냈다(ATR-01).
 logger = logging.getLogger(__name__)
 
+# 등록 Stop 이 현재가의 이 배수를 넘으면 '이탈' 이 아니라 단위 불일치(분할 등)로 본다.
+STOP_MISMATCH_RATIO = 1.5
+
 
 # ─────────────────────────────────────────────────────────────
 # True Range
@@ -346,10 +349,21 @@ def check_immediate_triggers(
     if _open_valid and gap_pct >= 3.0:
         triggers.append(f"GAP UP +{gap_pct:.1f}%")
 
-    # 트리거 4: 현재가 Stop 5% 이내
+    # 트리거 4: 등록 Stop 대비 위치 — 근접(5% 이내) / 이탈(Stop 이하) / 불일치(Stop 이 현재가보다 터무니없이 높음)
+    # 예전에는 `0 < dist <= 5` 만 봐서 종가가 Stop **아래**로 내려가면 아무것도 붙지 않았다. 전날 '근접' 알림을
+    # 받은 종목이 다음 날 -5% 미만 하락으로 Stop 을 깨면 정작 이탈 당일이 무음이었다(2026-09-19 검토 ATR-06).
     if current_stop is not None and current_stop > 0:
-        dist = (latest["Close"] - current_stop) / latest["Close"] * 100
-        if 0 < dist <= 5.0:
+        close_now = float(latest["Close"])
+        dist = (close_now - current_stop) / close_now * 100
+        if current_stop > close_now * STOP_MISMATCH_RATIO:
+            # 액면분할 뒤 조정 시세와 옛 Stop 처럼 단위가 어긋난 경우. '이탈' 로 울리면 거짓 경보이고,
+            # 그대로 두면 Stop 갱신(new > current)도 영영 일어나지 않는다 — 재등록이 필요하다.
+            triggers.append(
+                f"STOP MISMATCH 등록 Stop 이 현재가의 {current_stop / close_now:.1f}배 "
+                f"(Stop={current_stop:,.2f}) — 분할·데이터 점검 후 재등록 필요")
+        elif dist <= 0:
+            triggers.append(f"STOP BREACH {abs(dist):.1f}% 하회 (Stop={current_stop:,.2f}) — 손절선 이탈")
+        elif dist <= 5.0:
             triggers.append(f"STOP NEAR {dist:.1f}% (Stop={current_stop:,.2f})")
 
     # 트리거 5: 당일 급락 -5%
