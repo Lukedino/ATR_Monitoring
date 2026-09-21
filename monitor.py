@@ -284,36 +284,49 @@ def _run_daily_report(symbols: list[str], title: str) -> None:
     ----------
     symbols : 리포트 대상 심볼 리스트
     title   : 텔레그램 메시지 헤더 (이모지 포함)
+
+    필수 본문 생성·전송 실패는 호출자에게 전달해 창을 미완료로 남긴다.
+    재시도는 본문 전체를 다시 보내므로 이전에 성공한 조각은 중복될 수 있다.
+    차트는 부속물이며 필수 본문 전송 후 별도로 시도한다.
     """
     logger.info("%s 시작", title)
-    ohlcv_map = fetch_portfolio(symbols)
-    if not ohlcv_map:
-        tg.send_message(f"데이터 수집 실패 — {title}")
+    if not symbols:
+        logger.info("%s — 해당 시장의 설정된 종목 없음", title)
         return
+
+    ohlcv_map = {s: df for s, df in fetch_portfolio(symbols).items() if not df.empty}
+    if not ohlcv_map:
+        raise RuntimeError(f"리포트 시세 수집 실패 — {title}")
 
     summary = summarize_portfolio_atr(ohlcv_map, ATR_PERIOD)
     if summary.empty:
-        tg.send_message(f"ATR 계산 실패 — 데이터 부족 ({title})")
-        return
+        raise RuntimeError(f"리포트 ATR 계산 실패 — {title}")
 
     data_date = _get_data_date(ohlcv_map)
 
-    # 1. ATR 요약 텍스트
-    tg.send_long_message(tg.fmt_daily_report(summary, title, data_date=data_date))
-
-    # 2. 포트폴리오 바차트
-    bar_chart = plot_portfolio_atr_bar(summary, as_bytes=True)
-    tg.send_photo(bar_chart, caption="ATR% 비교")
-
-    # 3. Chandelier Stop 전체 현황
+    # 필수 보고 내용을 모두 계산한 뒤 전송한다. 계산 0건을 정상 리포트로 보내지 않는다.
     stop_recs       = load_stops()
     chandelier_list = []
     for symbol, df in ohlcv_map.items():
         ch = calc_chandelier_stop(symbol, df, ATR_PERIOD)
         if ch:
             chandelier_list.append(ch)
-    if chandelier_list:
-        tg.send_long_message(tg.fmt_chandelier_report(chandelier_list))
+    if not chandelier_list:
+        raise RuntimeError(f"리포트 Chandelier 계산 실패 — {title}")
+
+    # 필수 본문의 어느 조각이든 실패하면 창을 완료로 기록하지 않는다.
+    if not tg.send_long_message(tg.fmt_daily_report(summary, title, data_date=data_date)):
+        raise RuntimeError("리포트 ATR 요약 전송 실패")
+    if not tg.send_long_message(tg.fmt_chandelier_report(chandelier_list)):
+        raise RuntimeError("리포트 Chandelier 현황 전송 실패")
+
+    # 차트 실패가 이미 전달한 필수 본문을 실패로 바꾸거나 뒤 차트를 막지 않게 한다.
+    try:
+        bar_chart = plot_portfolio_atr_bar(summary, as_bytes=True)
+        if not tg.send_photo(bar_chart, caption="ATR% 비교"):
+            logger.warning("리포트 바차트 전송 실패 — 필수 본문은 이미 나갔다")
+    except Exception as exc:
+        logger.warning("리포트 바차트 실패 — 필수 본문은 이미 나갔다 (%s)", type(exc).__name__)
 
     # 4. 종목별 미니 차트 — Stop 근접 / ATR 스파이크 종목만 전송 (rate limit 방지)
     near_stop_syms = {ch.symbol for ch in chandelier_list if ch.is_near_stop}
@@ -331,14 +344,8 @@ def _run_daily_report(symbols: list[str], title: str) -> None:
         if symbol not in chart_targets or df.empty:
             continue
         rec   = stop_recs.get(symbol)
-        chart = plot_atr_chart(
-            symbol, df,
-            registered_stop=rec.current_stop if rec else None,
-            as_bytes=True,
-        )
-        if chart:
-            tg.send_photo(chart, caption=fmt_symbol(symbol))
-            time.sleep(4)   # Telegram rate limit 방지 (분당 15장 ≈ 안전 한도)
+        _send_chart_quietly(symbol, df, rec.current_stop if rec else None, fmt_symbol(symbol))
+        time.sleep(4)   # Telegram rate limit 방지 (분당 15장 ≈ 안전 한도)
 
     logger.info("%s 완료", title)
 
@@ -431,6 +438,12 @@ def _send_daily_brief(window, result: StopCheckResult) -> None:
     scope      = set(symbols)
     chandelier = [ch for ch in result.chandelier if ch.symbol in scope]
     ohlcv_map  = {s: df for s, df in result.ohlcv_map.items() if s in scope}
+
+    # 전체 수집률이 충분해도 한 시장이 전멸할 수 있다. 설정 자체가 빈 시장은 기존대로
+    # 0종목 요약을 허용하고, 요청이 있는 시장의 수집/계산 0건만 완료를 막는다.
+    collected = sum(1 for df in ohlcv_map.values() if not df.empty)
+    if scope and (not collected or not chandelier):
+        raise RuntimeError(f"종가 요약 데이터 부족 — 요청 {len(scope)}, 수집 {collected}, 계산 {len(chandelier)}")
 
     spike_count = 0
     try:

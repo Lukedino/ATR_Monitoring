@@ -175,7 +175,7 @@ def send_photo(image_bytes: bytes, caption: str = "") -> bool:
                 timeout=TIMEOUT_SEC,
             )
         except requests.RequestException as exc:
-            logger.error("텔레그램 이미지 전송 실패 (네트워크): %s", exc)
+            logger.error("텔레그램 이미지 전송 실패 (네트워크): %s", _describe(exc))
             return False
 
         if resp.status_code == 429:
@@ -193,7 +193,7 @@ def send_photo(image_bytes: bytes, caption: str = "") -> bool:
             logger.info("텔레그램 이미지 전송 성공")
             return True
         except requests.exceptions.HTTPError as exc:
-            logger.error("텔레그램 이미지 전송 실패: %s", exc)
+            logger.error("텔레그램 이미지 전송 실패: %s", _describe(exc))
             return False
 
     logger.error("텔레그램 이미지 전송 실패: Rate Limit — 재시도 3회 소진")
