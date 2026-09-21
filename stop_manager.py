@@ -23,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from market_dates import market_date, utc_now
 from state_validation import (
     StateValidationError, read_state, state_locked, validate_number,
     validate_string_list, write_state,
@@ -319,7 +320,7 @@ def advance_stage(symbol: str) -> int:
 # {
 #   "AAPL": {
 #     "date":     "2026-02-27",
-#     "sent_at":  "2026-02-27T07:15",   ← 마지막 발송 타임스탬프 (기록용)
+#     "sent_at":  "2026-02-27T07:15+00:00",  ← UTC 발송 타임스탬프 (기록용)
 #     "triggers": ["SURGE +5.2%", "VOLUME 320%"],
 #     "close":    185.43,
 #     "stop":     160.0
@@ -336,6 +337,9 @@ def advance_stage(symbol: str) -> int:
 #   KR/US 장 마감 후에는 가격 변동 없으므로 조건 2~4가 충족되지 않아 자연 억제됨
 #   시장 활성 여부 게이트는 monitor.py 의 _is_market_active_for_triggers() 가 담당
 # ─────────────────────────────────────────────────────────────
+
+_ALERT_DATE_BASIS = "market-v1"
+
 
 @state_locked
 def _load_alert_log() -> dict:
@@ -358,6 +362,8 @@ def should_send_trigger_alert(
     new_triggers: list[str],
     new_close:   float,
     new_stop:    float | None,
+    *,
+    now_utc:     datetime | None = None,
 ) -> bool:
     """
     트리거 알림 발송 여부를 판단합니다.
@@ -374,12 +380,19 @@ def should_send_trigger_alert(
     validate_number(new_close)
     if new_stop is not None:
         validate_number(new_stop)
+    now = utc_now(now_utc)
     log   = _load_alert_log()
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = market_date(symbol, now_utc=now).isoformat()
     entry = log.get(symbol)
 
     # ① 발송 이력 없음
     if entry is None:
+        return True
+
+    # Legacy dates used the host calendar and may coincidentally equal today's
+    # market date. Allow one successful re-notification before trusting the key.
+    # Do not reinterpret the old naive timestamp or rewrite state while reading.
+    if entry.get("date_basis") != _ALERT_DATE_BASIS:
         return True
 
     # ① 새 거래일 시작 → 이전 알람 로그 초기화 (날짜 변경 시 재발송 허용)
@@ -422,13 +435,19 @@ def mark_trigger_sent(
     triggers:    list[str],
     close:       float,
     stop:        float | None,
+    *,
+    now_utc:     datetime | None = None,
 ) -> None:
-    """트리거 알림 발송 기록을 저장합니다."""
+    """전송 성공 후 시장 날짜와 UTC 발송 시각을 기록한다.
+
+    기존 date/sent_at은 읽을 때 재해석하지 않고 다음 성공 기록 때만 바꾼다.
+    """
+    now = utc_now(now_utc)
     log = _load_alert_log()
-    now = datetime.now()
     log[symbol] = {
-        "date":     now.strftime("%Y-%m-%d"),
-        "sent_at":  now.isoformat(timespec="minutes"),   # 쿨다운 계산용 타임스탬프
+        "date":     market_date(symbol, now_utc=now).isoformat(),
+        "date_basis": _ALERT_DATE_BASIS,
+        "sent_at":  now.isoformat(timespec="minutes"),
         "triggers": triggers,
         "close":    close,
         "stop":     stop,

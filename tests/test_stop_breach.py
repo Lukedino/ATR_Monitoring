@@ -4,17 +4,27 @@
 전날 '근접' 알림을 받은 종목이 다음 날 -5% 미만 하락으로 Stop 을 깨면 정작 이탈 당일은 무음이었다.
 """
 import json
-from datetime import date
+from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
 
 import atr_calculator
+import market_dates
 import stop_manager as sm
 
 
+@pytest.fixture(autouse=True)
+def fixed_market_clock(monkeypatch):
+    original = market_dates.utc_now
+    fixed_now = datetime(2026, 1, 12, 18, tzinfo=timezone.utc)
+    monkeypatch.setattr(market_dates, "utc_now",
+                        lambda now_utc=None: fixed_now if now_utc is None else original(now_utc))
+    monkeypatch.setattr(sm, "utc_now", market_dates.utc_now)
+
+
 def bars(last_close, base=100.0, rows=30):
-    idx = pd.date_range(end=pd.Timestamp(date.today()), periods=rows, freq="D")
+    idx = pd.date_range(end=pd.Timestamp("2026-01-12"), periods=rows, freq="D")
     df = pd.DataFrame({"Open": base, "High": base * 1.005, "Low": base * 0.995, "Close": base, "Volume": 1000.0}, index=idx)
     df.iloc[-1, df.columns.get_loc("Close")] = last_close
     df.iloc[-1, df.columns.get_loc("Open")] = base                       # 갭 없음

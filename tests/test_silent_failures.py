@@ -1,14 +1,16 @@
 """손절 감시가 '실패했는데 성공으로 기록되는' 경로를 막는다 (2026-09-19 심층 검토 ATR-01~05)."""
-from datetime import date, timedelta
+from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
 
 import atr_calculator
 
+NOW_UTC = datetime(2026, 1, 12, 12, 0, tzinfo=timezone.utc)
+
 
 def _bars(last_close, rows=30, base=100.0):
-    idx = pd.date_range(end=pd.Timestamp(date.today()), periods=rows, freq="D")
+    idx = pd.date_range(end="2026-01-12", periods=rows, freq="D")
     df = pd.DataFrame({"Open": base, "High": base * 1.01, "Low": base * 0.99, "Close": base, "Volume": 1000.0}, index=idx)
     df.iloc[-1, df.columns.get_loc("Close")] = last_close
     df.iloc[-1, df.columns.get_loc("Low")] = min(last_close, base * 0.99)
@@ -20,7 +22,7 @@ def _bars(last_close, rows=30, base=100.0):
 @pytest.mark.parametrize("symbol, last_close", [("999991.KQ", 60.0), ("999992.KS", 140.0)])
 def test_kr_price_limit_guard_returns_quietly_instead_of_raising(symbol, last_close, caplog):
     """액면분할·권리락 당일(.KQ 는 auto_adjust=False)에 정확히 이 분기를 탄다. 예전엔 NameError."""
-    result = atr_calculator.check_immediate_triggers(symbol, _bars(last_close), None)
+    result = atr_calculator.check_immediate_triggers(symbol, _bars(last_close), None, now_utc=NOW_UTC)
     assert result.triggers == []
     assert any("가격제한폭" in r.getMessage() for r in caplog.records)
 

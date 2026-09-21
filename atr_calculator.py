@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 import pandas as pd
 import numpy as np
@@ -27,6 +28,7 @@ from config import (
     ATR_ALERT_MULTIPLIER,
     get_atr_multiple,
 )
+from market_dates import daily_bar_date, market_date
 
 # 모듈 로거. 예전엔 선언 없이 logger.warning 을 불러 KR 가격제한폭 가드가 NameError 를 냈다(ATR-01).
 logger = logging.getLogger(__name__)
@@ -345,6 +347,8 @@ def check_immediate_triggers(
     symbol: str,
     df: pd.DataFrame,
     current_stop: float | None = None,
+    *,
+    now_utc: datetime | None = None,
 ) -> TriggerResult:
     """
     즉각 대응이 필요한 6가지 트리거 조건을 감지합니다.
@@ -362,6 +366,7 @@ def check_immediate_triggers(
     symbol       : 종목 코드
     df           : OHLCV DataFrame
     current_stop : 현재 설정된 Stop Level (None이면 트리거 4 생략)
+    now_utc      : 시간대가 있는 기준 시각 (None이면 현재 UTC 시각)
     """
     triggers: list[str] = []
 
@@ -371,18 +376,11 @@ def check_immediate_triggers(
     latest = df.iloc[-1]
     prev   = df.iloc[-2]
 
-    # 최신 데이터 freshness 체크
-    # 오늘 날짜 데이터가 아니면 어제 이벤트가 재감지되는 false trigger 방지
-    # (미국 종목 프리마켓 시간, KR 장전 등에서 어제 종가로 트리거 재발생 차단)
-    from datetime import date as _date
-    try:
-        latest_date = (latest.name.date()
-                       if isinstance(latest.name, pd.Timestamp)
-                       else pd.Timestamp(latest.name).date())
-        if latest_date < _date.today():
-            return TriggerResult(symbol=symbol, triggers=triggers)
-    except Exception:
-        pass  # 날짜 파싱 실패 시 체크 생략
+    # 일봉 인덱스는 거래일 라벨이다. 호스트 날짜나 인덱스의 UTC 변환 날짜가
+    # 아니라 해당 시장의 오늘과 비교하며, 해석 불가/과거/미래 봉은 제외한다.
+    latest_date = daily_bar_date(latest.name)
+    if latest_date is None or latest_date != market_date(symbol, now_utc):
+        return TriggerResult(symbol=symbol, triggers=triggers)
 
     # prev["Close"] 유효성 검증: 0이면 daily_chg 계산 불가 → 데이터 오류
     if prev["Close"] <= 0:

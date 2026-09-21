@@ -162,14 +162,16 @@ def test_open_is_not_an_atr_input_and_does_not_block_valid_hlc(opening):
 
 
 def test_collector_current_quote_without_open_retains_valid_atr_and_stop():
-    from data_collector import _sync_latest_price_from_fast_info
+    from data_collector import _sync_latest_quote
 
     frame = bars()
     today = (frame.index[-1] + pd.Timedelta(days=1)).date()
-    ticker = SimpleNamespace(fast_info=SimpleNamespace(
-        last_price=103.0, day_high=105.0, day_low=95.0, open=None, last_volume=1000,
-    ))
-    collected = _sync_latest_price_from_fast_info(ticker, "SYM-ATR", frame, today)
+    now = pd.Timestamp(today, tz="America/New_York") + pd.Timedelta(hours=12)
+    metadata = {"regularMarketTime": now.timestamp(), "regularMarketPrice": 103.0,
+                "regularMarketDayHigh": 105.0, "regularMarketDayLow": 95.0,
+                "regularMarketVolume": 1000}
+    ticker = SimpleNamespace(get_history_metadata=lambda: metadata)
+    collected = _sync_latest_quote(ticker, "SYM-ATR", frame, now_utc=now.to_pydatetime())
     assert len(collected) == len(frame) + 1
     assert pd.isna(collected["Open"].iloc[-1])
     assert A.atr_input_issue(collected) is None

@@ -5,12 +5,14 @@ yfinance 기반 OHLCV 데이터 수집 모듈
 - 단일/복수 심볼 다운로드
 - High, Low, Close 컬럼 정규화
 - 국내 주식(.KS/.KQ), 해외 주식, 암호화폐, ETF 통합 처리
-- fast_info 실시간 보완: history() 지연 시 오늘 데이터 주입
+- 시각이 확인된 Yahoo metadata로 시장 날짜의 부분 봉 보완
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+import math
+from collections.abc import Callable
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import yfinance as yf
@@ -18,6 +20,7 @@ import yfinance as yf
 import requests
 
 from config import LOOKBACK_DAYS
+from market_dates import daily_bar_date, market_date, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +74,7 @@ def _resolve_yahoo_crypto_ticker(symbol: str) -> str | None:
                 return qsym
         return None
     except Exception as exc:
-        logger.debug("야후 크립토 심볼 검색 실패 (%s): %s", symbol, exc)
+        logger.debug("야후 크립토 심볼 검색 실패 (%s): %s", symbol, type(exc).__name__)
         return None
 
 
@@ -79,8 +82,8 @@ def _fetch_naver_kr_price(code6: str) -> float | None:
     """
     네이버 금융 모바일 API로 국내 종목 현재가를 조회합니다.
 
-    Yahoo Finance fast_info 가격이 캐싱/오류로 잘못된 경우 교차 검증 소스로 사용.
-    예: 일지테크(019540) → Yahoo fast_info=4,980 / Naver=6,160 → Naver 가격 사용
+    새 부분 봉을 만들기 전 Yahoo 가격과 독립적으로 교차 검증합니다.
+    이 응답은 가격만 반환하므로 시각이 있는 Yahoo 가격 대신 주입하지 않습니다.
 
     Parameters
     ----------
@@ -105,21 +108,20 @@ def _fetch_naver_kr_price(code6: str) -> float | None:
             raw = data.get(field, "")
             if raw:
                 price = float(str(raw).replace(",", ""))
-                if price > 0:
+                if math.isfinite(price) and price > 0:
                     return price
         return None
     except Exception as exc:
-        logger.debug("네이버 가격 조회 실패 (%s): %s", code6, exc)
+        logger.debug("네이버 가격 조회 실패 (%s): %s", code6, type(exc).__name__)
         return None
 
 
-def _build_date_range(lookback_days: int) -> tuple[str, str]:
-    """오늘 기준으로 시작일/종료일 문자열(YYYY-MM-DD) 반환.
+def _build_date_range(lookback_days: int, today: date) -> tuple[str, str]:
+    """호출자가 정한 시장 날짜로 시작일/종료일 문자열(YYYY-MM-DD) 반환.
 
     yfinance history(end=...) 는 end 날짜를 exclusive 처리하므로
     오늘 데이터를 포함하려면 end = today + 1일 이 필요합니다.
     """
-    today = datetime.today()
     end   = today + timedelta(days=1)   # yfinance exclusive end → 오늘 포함
     start = today - timedelta(days=lookback_days)
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
@@ -153,119 +155,137 @@ def _is_stale(last_date: "datetime.date", today: "datetime.date") -> bool:
     return days_old > 4   # 공휴일 연휴까지 감안하여 4일 초과부터 경고
 
 
-def _sync_latest_price_from_fast_info(
+def _positive_quote_number(value) -> float | None:
+    """Only finite positive JSON numbers qualify as quote prices/timestamps."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _sync_latest_quote(
     ticker: yf.Ticker,
     symbol: str,
     df: pd.DataFrame,
-    today: "datetime.date",
+    *,
+    now_utc: datetime | None = None,
+    receipt_clock: Callable[[], datetime] | None = None,
 ) -> pd.DataFrame:
-    """
-    fast_info 실시간 가격으로 최신 Close를 동기화합니다.
+    """같은 Yahoo metadata 응답의 시각·HLC로만 시장 당일 봉을 보완합니다.
 
-    KR 종목 history 지연 시 처리:
-    - fast_info.last_price와 네이버 금융 가격을 교차 검증
-    - 5% 초과 괴리 → 네이버 가격 우선 사용 (Yahoo fast_info 캐싱 오류 방어)
-    - 5% 이내 일치 또는 네이버 조회 실패 → fast_info 사용
-
-    처리 방식:
-    - 0.1% 이내 차이 → 이미 최신, 변경 없음
-    - last_date == today 이지만 Close가 stale → 기존 행 Close/High/Low 업데이트
-    - last_date < today → 네이버 교차검증 후 오늘 행 신규 추가
+    fast_info에는 이 가격과 짝지을 시각이 없으므로 사용하지 않습니다.
+    regularMarketTime/Price/DayHigh/DayLow 중 하나라도 없거나 오래된 응답이면
+    원본을 유지합니다. 제공자가 metadata를 생략하면 부분 봉 보완도 생략됩니다.
+    KR 신규 봉은 Naver와 5% 초과 괴리 시 보류하며, 시간 없는 Naver 값을
+    Yahoo timestamp에 결합하지 않습니다. 신규 봉 Open은 확인할 수 없어 NaN입니다.
+    시장 날짜는 조회 시작 시각에 고정하되, 미래 시세는 응답 수신 시각과 비교합니다.
+    명시한 now_utc는 receipt_clock이 없으면 재현 가능한 고정 시각으로 취급합니다.
     """
+    now = utc_now(now_utc)
+    today = market_date(symbol, now)
+    if df.empty:
+        return df
+    last_date = daily_bar_date(df.index[-1])
+    if last_date is None or last_date > today:
+        return df
     try:
-        fi = ticker.fast_info
-        last_price = getattr(fi, "last_price", None)
-        if not last_price or last_price <= 0:
+        metadata = ticker.get_history_metadata()
+        received = utc_now(receipt_clock()) if receipt_clock is not None else (
+            utc_now() if now_utc is None else now
+        )
+        if received < now:
+            return df
+        if not isinstance(metadata, dict):
+            return df
+        timestamp = _positive_quote_number(metadata.get("regularMarketTime"))
+        last_price = _positive_quote_number(metadata.get("regularMarketPrice"))
+        day_high = _positive_quote_number(metadata.get("regularMarketDayHigh"))
+        day_low = _positive_quote_number(metadata.get("regularMarketDayLow"))
+        if any(value is None for value in (timestamp, last_price, day_high, day_low)):
+            return df
+        quote_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        if quote_time > received or market_date(symbol, quote_time) != today:
+            return df
+        if not day_low <= last_price <= day_high:
             return df
 
         last_close = float(df["Close"].iloc[-1])
-        if last_close <= 0:
-            logger.warning("fast_info 동기화 건너뜀: %s → 기존 Close=%.4f (비정상값)", symbol, last_close)
+        if not math.isfinite(last_close) or last_close <= 0:
+            logger.warning("시세 보완 건너뜀: %s → 기존 Close 비정상", symbol)
             return df
         diff_ratio = abs(last_price - last_close) / last_close
 
-        # 0.1% 이내 차이 → 이미 최신 데이터
-        if diff_ratio < 0.001:
+        # 이미 당일 행이 있으면 기존 작은 차이 무시 정책 유지.
+        # 전일과 가격이 같아도 확인된 당일 시세는 새 봉을 만들 수 있다.
+        if last_date == today and diff_ratio < 0.001:
             return df
 
         # KR 종목: 31% 초과 차이 → 분할/권리락 의심, 동기화 건너뜀
         _is_kr = symbol.upper().endswith((".KS", ".KQ"))
         if _is_kr and diff_ratio > 0.31:
             logger.warning(
-                "fast_info 동기화 건너뜀: %s → 변동 %.1f%% (KR 한도 31%% 초과, 분할/권리락 의심)",
+                "시세 보완 건너뜀: %s → 변동 %.1f%% (KR 한도 31%% 초과, 분할/권리락 의심)",
                 symbol, diff_ratio * 100,
             )
             return df
 
-        _day_high = getattr(fi, "day_high", None)
-        _day_low  = getattr(fi, "day_low",  None)
-        last_date = df.index[-1].date()
-
         if last_date == today:
             # 오늘 행이 있지만 Close가 stale → 기존 행 업데이트
-            df = df.copy()
-            df.loc[df.index[-1], "Close"] = last_price
-            if _day_high:
-                df.loc[df.index[-1], "High"] = max(float(_day_high), float(df.loc[df.index[-1], "High"]))
-            if _day_low:
-                df.loc[df.index[-1], "Low"]  = min(float(_day_low),  float(df.loc[df.index[-1], "Low"]))
+            result = df.copy()
+            result.loc[result.index[-1], "Close"] = last_price
+            result.loc[result.index[-1], "High"] = max(day_high, float(df["High"].iloc[-1]))
+            result.loc[result.index[-1], "Low"] = min(day_low, float(df["Low"].iloc[-1]))
             logger.info(
-                "fast_info 동기화: %s Close %.4f → %.4f (오늘 행 업데이트)",
+                "시각 확인된 시세 보완: %s Close %.4f → %.4f (시장 당일 행 업데이트)",
                 symbol, last_close, last_price,
             )
         else:
-            # ── 오늘 행 없음 (history 지연) → 교차 검증 후 신규 추가 ──────────────
-            # KR 종목은 Yahoo fast_info가 캐싱된 오래된 가격을 반환하는 경우가 있음
-            # (예: 일지테크 019540 → Yahoo=4,980 / Naver 실제=6,160 → 24% 괴리)
-            # 네이버 금융에서 독립적으로 현재가를 확인해 교차 검증 후 주입 가격 결정
-            inject_price = last_price  # 기본값: fast_info
-
+            # last_date < today만 남는다. 기존 행 뒤에 과거/중복 날짜를 붙이지 않는다.
             if _is_kr:
                 _code6 = symbol.split(".")[0]
-                _naver = _fetch_naver_kr_price(_code6)
-                if _naver and _naver > 0:
+                _naver = _positive_quote_number(_fetch_naver_kr_price(_code6))
+                if _naver is not None:
                     _nv_diff = abs(_naver - last_price) / last_price
                     if _nv_diff > 0.05:
-                        # Yahoo-Naver 5% 초과 괴리 → Naver 가격 우선
                         logger.warning(
-                            "fast_info 가격 오류 감지: %s → Yahoo %.0f / Naver %.0f (%.1f%% 괴리) — Naver 가격으로 주입",
-                            symbol, last_price, _naver, _nv_diff * 100,
+                            "시세 보완 보류: %s → Yahoo/Naver %.1f%% 괴리 (시간 없는 가격 대체 금지)",
+                            symbol, _nv_diff * 100,
                         )
-                        inject_price = _naver
-                    else:
-                        logger.debug(
-                            "fast_info 교차검증 통과: %s → Yahoo %.0f / Naver %.0f (%.1f%% 이내)",
-                            symbol, last_price, _naver, _nv_diff * 100,
-                        )
-                else:
-                    # 네이버 조회 실패 시 fast_info 유지 (경고 없이 fallback)
-                    logger.debug("네이버 교차검증 생략: %s → Naver 조회 실패, fast_info 사용", symbol)
+                        return df
 
-            _open = getattr(fi, "open", None)
+            volume = _positive_quote_number(metadata.get("regularMarketVolume"))
             today_row = pd.DataFrame(
                 [{
-                    "Open":   float(_open)     if _open     else float("nan"),
-                    "High":   float(_day_high) if _day_high else inject_price,
-                    "Low":    float(_day_low)  if _day_low  else inject_price,
-                    "Close":  inject_price,
-                    "Volume": int(getattr(fi, "last_volume", 0) or 0),
+                    "Open":   float("nan"),
+                    "High":   day_high,
+                    "Low":    day_low,
+                    "Close":  last_price,
+                    "Volume": int(volume) if volume is not None and volume.is_integer() else 0,
                 }],
                 index=[pd.Timestamp(today)],
             )
             today_row.index.name = "Date"
-            df = pd.concat([df, today_row])
+            result = pd.concat([df, today_row])
+            result.attrs = dict(df.attrs)
             logger.info(
-                "fast_info 동기화: %s → 오늘 Close %.4f 주입 (history 지연 감지)",
-                symbol, inject_price,
+                "시각 확인된 시세 보완: %s → 시장 당일 Close %.4f 부분 봉 추가",
+                symbol, last_price,
             )
-
+        return result
     except Exception as exc:
-        logger.warning("fast_info 동기화 실패 (%s): %s", symbol, exc)
-
+        logger.warning("시각 확인된 시세 보완 실패 (%s): %s", symbol, type(exc).__name__)
     return df
 
 
-def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame:
+def fetch_ohlcv(
+    symbol: str,
+    lookback_days: int = LOOKBACK_DAYS,
+    *,
+    now_utc: datetime | None = None,
+) -> pd.DataFrame:
     """
     단일 심볼의 OHLCV 데이터를 가져옵니다.
 
@@ -287,7 +307,9 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
                     (False로 바꾸면 권리락일 비교 시 phantom 급락 트리거 오발령)
     - non-KR      : auto_adjust=True  — 배당 제거된 연속 가격 계열 사용
     """
-    start, end = _build_date_range(lookback_days)
+    now = utc_now(now_utc)
+    today = market_date(symbol, now)
+    start, end = _build_date_range(lookback_days, today)
     _sym_upper = symbol.upper()
     _is_kq     = _sym_upper.endswith(".KQ")
     _is_kr     = _sym_upper.endswith(".KS") or _is_kq
@@ -410,16 +432,15 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
                             )
                             df = _df_raw
             except Exception as _exc:
-                logger.debug("%s: auto_adjust 품질 검증 실패: %s", symbol, _exc)
+                logger.debug("%s: auto_adjust 품질 검증 실패: %s", symbol, type(_exc).__name__)
 
-        # fast_info로 최신 Close 항상 동기화
-        # (오늘 행이 있어도 stale close인 경우 + 오늘 행이 없는 경우 모두 처리)
-        today = datetime.today().date()
-        df = _sync_latest_price_from_fast_info(ticker, symbol, df, today)
+        # 조회 범위의 시장 날짜는 고정하고 응답 수신 시각으로 미래 quote를 걸러낸다.
+        df = _sync_latest_quote(ticker, symbol, df, now_utc=now,
+                                receipt_clock=utc_now if now_utc is None else None)
 
         # 보완 후에도 stale하면 경고
-        last_date_after = df.index[-1].date()
-        if _is_stale(last_date_after, today):
+        last_date_after = daily_bar_date(df.index[-1])
+        if last_date_after is not None and _is_stale(last_date_after, today):
             logger.warning(
                 "오래된 데이터 감지: %s → 마지막 날짜 %s (%d일 전) — 거래 정지/Yahoo 지연 가능성",
                 symbol, last_date_after, (today - last_date_after).days,
@@ -428,7 +449,7 @@ def fetch_ohlcv(symbol: str, lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame
         return df
 
     except Exception as exc:
-        logger.error("데이터 조회 실패 (%s): %s", symbol, exc)
+        logger.error("데이터 조회 실패 (%s): %s", symbol, type(exc).__name__)
         return pd.DataFrame()
 
 
@@ -494,7 +515,7 @@ def enrich_kr_stock_names(symbols: list[str]) -> None:
                 KR_STOCK_NAMES[symbol] = name
                 logger.info("종목명 조회: %s → %s", symbol, name)
         except Exception as exc:
-            logger.debug("종목명 조회 실패 (%s): %s", symbol, exc)
+            logger.debug("종목명 조회 실패 (%s): %s", symbol, type(exc).__name__)
 
 
 def fetch_usd_krw() -> float:
@@ -512,6 +533,6 @@ def fetch_usd_krw() -> float:
             logger.info("USD/KRW 환율: %.0f", rate)
             return rate
     except Exception as exc:
-        logger.error("환율 조회 실패: %s", exc)
+        logger.error("환율 조회 실패: %s", type(exc).__name__)
     logger.warning("환율 조회 실패 — 기본값 1,350 사용")
     return 1350.0
