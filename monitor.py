@@ -101,17 +101,18 @@ log_masking.install_for_github_actions(ALL_SYMBOLS, KR_STOCK_NAMES)
 # 시장 활성 시간 게이트
 # ─────────────────────────────────────────────────────────────
 
-def _is_market_active_for_triggers(symbol: str) -> bool:
+def _is_market_active_for_triggers(symbol: str, *, now_utc=None) -> bool:
     """해당 종목의 시장이 지금 트리거 알람을 발송할 수 있는 활성 시간대인지 반환합니다.
 
     판정은 market_hours 로 위임한다. 예전에는 여기서 UTC 시를 직접 계산했는데,
     그 방식이 KR 애프터마켓 연장(2026-09-14)과 US 서머타임을 둘 다 놓쳤다.
+    ETF의 ATR 자산 분류와 별개로 심볼의 거래시장 시간대를 적용한다.
     """
-    from datetime import datetime, timezone
-    from config import get_market_type
+    from config import get_trading_market
+    from market_dates import utc_now
     from market_hours import is_market_active
 
-    return is_market_active(get_market_type(symbol), datetime.now(timezone.utc))
+    return is_market_active(get_trading_market(symbol), utc_now(now_utc))
 
 
 # ─────────────────────────────────────────────────────────────

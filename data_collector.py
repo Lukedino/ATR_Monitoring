@@ -25,6 +25,77 @@ from market_dates import daily_bar_date, market_date, utc_now
 logger = logging.getLogger(__name__)
 
 
+_CRYPTO_SEARCH_LIMIT = 15
+
+
+def _crypto_search_parts(symbol: str) -> tuple[str, str, str] | None:
+    if not isinstance(symbol, str):
+        return None
+    normalized = symbol.strip().upper()
+    for suffix in ("-USDT", "-USD"):
+        if normalized.endswith(suffix):
+            base = normalized[:-len(suffix)]
+            return (normalized, base, suffix) if base else None
+    return None
+
+
+def _valid_crypto_search_field(value: object) -> bool:
+    """Provider identity fields must not need whitespace/control cleanup."""
+    return (isinstance(value, str) and bool(value)
+            and not any(char.isspace() or ord(char) < 32 or ord(char) == 127
+                        for char in value))
+
+
+def _select_yahoo_crypto_ticker(symbol: str, data: object) -> str | None:
+    """Choose an exact symbol or one unambiguous same-currency numeric variant.
+
+    Search ordering is not identity evidence. Review the entire response and
+    reject malformed or potentially truncated results before inferring an alias.
+    Repeated rows for the same normalized ticker do not create ambiguity.
+    """
+    parts = _crypto_search_parts(symbol)
+    if parts is None:
+        return None
+    requested, base, suffix = parts
+    if not isinstance(data, dict) or not isinstance(data.get("quotes"), list):
+        logger.warning("크립토 심볼 보정 보류: 검색 응답 형식이 올바르지 않습니다.")
+        return None
+
+    exact = False
+    variants: set[str] = set()
+    quotes = data["quotes"]
+    for quote in quotes:
+        if (not isinstance(quote, dict)
+                or not _valid_crypto_search_field(quote.get("symbol"))
+                or not _valid_crypto_search_field(quote.get("quoteType"))):
+            logger.warning("크립토 심볼 보정 보류: 검색 응답 형식이 올바르지 않습니다.")
+            return None
+        qsym = quote["symbol"].upper()
+        qtype = quote["quoteType"].upper()
+        if qtype != "CRYPTOCURRENCY" or not qsym.endswith(suffix):
+            continue
+        if qsym == requested:
+            exact = True
+            continue
+        core = qsym[:-len(suffix)]
+        if core.startswith(base):
+            tail = core[len(base):]
+            if tail and tail.isascii() and tail.isdigit():
+                variants.add(qsym)
+
+    # An exact hit also prevents a temporarily empty original ticker from being
+    # silently replaced with another coin merely because its result came first.
+    if exact:
+        return requested
+    if len(variants) > 1:
+        logger.warning("크립토 심볼 보정 보류: 숫자 변형 후보가 여러 개입니다.")
+        return None
+    if len(quotes) >= _CRYPTO_SEARCH_LIMIT:
+        logger.warning("크립토 심볼 보정 보류: 검색 결과가 조회 한도에 도달했습니다.")
+        return None
+    return next(iter(variants)) if variants else None
+
+
 def _resolve_yahoo_crypto_ticker(symbol: str) -> str | None:
     """
     야후 검색 API로 크립토 심볼의 실제 yfinance 티커를 찾습니다.
@@ -34,47 +105,30 @@ def _resolve_yahoo_crypto_ticker(symbol: str) -> str | None:
 
     동작:
     - "BASE-USD" / "BASE-USDT" 형식 입력 → 베이스 부분 추출 후 검색
-    - 검색 결과 중 quoteType=CRYPTOCURRENCY 이고 베이스 또는 "베이스+숫자"로 시작하는 심볼 반환
+    - 같은 통화의 CRYPTOCURRENCY 중 정확한 심볼을 최우선으로 반환
+    - 정확한 심볼이 없으면 ASCII 숫자 변형이 유일하고 응답이 한도 미만일 때만 반환
+    - 여러 후보나 잘못된 응답은 자동 보정하지 않음
 
     Returns
     -------
     실제 yfinance 티커 (예: "HYPE32196-USD") 또는 None
     """
-    sym_upper = symbol.upper()
-    suffix = None
-    for s in ("-USDT", "-USD"):
-        if sym_upper.endswith(s):
-            suffix = s
-            break
-    if suffix is None:
+    parts = _crypto_search_parts(symbol)
+    if parts is None:
         return None
-
-    base = sym_upper[: -len(suffix)]
-    if not base:
-        return None
+    _, base, _ = parts
 
     try:
         url = "https://query1.finance.yahoo.com/v1/finance/search"
-        params = {"q": base, "quotesCount": 15, "newsCount": 0}
+        params = {"q": base, "quotesCount": _CRYPTO_SEARCH_LIMIT, "newsCount": 0}
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         resp = requests.get(url, params=params, headers=headers, timeout=5)
         resp.raise_for_status()
         data = resp.json()
 
-        for quote in data.get("quotes", []):
-            qsym = str(quote.get("symbol", "")).upper()
-            qtype = str(quote.get("quoteType", "")).upper()
-            if qtype != "CRYPTOCURRENCY":
-                continue
-            if not qsym.endswith(suffix):
-                continue
-            core = qsym[: -len(suffix)]
-            # 정확 일치 또는 "BASE+숫자" 형태 (HYPE → HYPE32196)
-            if core == base or (core.startswith(base) and core[len(base):].isdigit()):
-                return qsym
-        return None
+        return _select_yahoo_crypto_ticker(symbol, data)
     except Exception as exc:
-        logger.debug("야후 크립토 심볼 검색 실패 (%s): %s", symbol, type(exc).__name__)
+        logger.debug("야후 크립토 심볼 검색 실패: %s", type(exc).__name__)
         return None
 
 

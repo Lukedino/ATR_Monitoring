@@ -5,6 +5,7 @@
 import json
 import os
 from dotenv import load_dotenv
+from symbol_market import get_trading_market, is_ambiguous_numeric_symbol
 
 load_dotenv()
 
@@ -101,10 +102,19 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
         else:
             suffix = _CATEGORY_SUFFIX.get(category, "")
             # KR/코스닥 종목코드는 6자리 zero-padding 보장
-            # (Excel이 숫자로 파싱하면 005930 → 5930 이 되므로)
-            if suffix in (".KS", ".KQ") and ticker.isdigit():
-                ticker = ticker.zfill(6)
+            # 시장이 이미 정해진 숫자만 Excel의 .0 표기와 앞자리 0을 복원한다.
+            if suffix in (".KS", ".KQ"):
+                if is_ambiguous_numeric_symbol(ticker):
+                    ticker = ticker.split(".", 1)[0]
+                if ticker.isdigit():
+                    ticker = ticker.zfill(6)
             symbol = ticker + suffix
+
+        # ETF describes an asset class, not which exchange supplied this code.
+        # Reject the entire configured source instead of dropping one holding
+        # or guessing .KS/.KQ for a bare numeric code.
+        if is_ambiguous_numeric_symbol(symbol):
+            raise ValueError("portfolio_symbol_market_required")
 
         if symbol not in symbols:          # 중복 제거 (순서 유지)
             symbols.append(symbol)
@@ -204,6 +214,8 @@ def _validated_portfolio(value) -> dict[str, list[str]]:
                or symbol != symbol.strip() or any(ord(char) < 32 or ord(char) == 127 for char in symbol)
                for symbol in symbols):
             raise ValueError("portfolio_symbol_invalid")
+        if any(is_ambiguous_numeric_symbol(symbol) for symbol in symbols):
+            raise ValueError("portfolio_symbol_market_required")
         result[group] = list(symbols)
     if not any(result.values()):
         raise ValueError("portfolio_empty")
@@ -282,15 +294,15 @@ SYMBOL_ENTRY_PRICES: dict[str, float] = _symbol_entry_prices
 # 시장별 심볼 분류 (job_stop_check / daily_report 분리용)
 KR_SYMBOLS: list[str] = [
     s for s in ALL_SYMBOLS
-    if s.upper().endswith('.KS') or s.upper().endswith('.KQ')
+    if get_trading_market(s) == "KR"
 ]
 CRYPTO_SYMBOLS: list[str] = [
     s for s in ALL_SYMBOLS
-    if s.upper().endswith('-USD') or s.upper().endswith('-USDT')
+    if get_trading_market(s) == "Crypto"
 ]
 US_SYMBOLS: list[str] = [
     s for s in ALL_SYMBOLS
-    if s not in KR_SYMBOLS and s not in CRYPTO_SYMBOLS
+    if get_trading_market(s) == "US"
 ]
 
 # ─────────────────────────────────────────────────────────────
@@ -422,7 +434,9 @@ _ETF_SYMBOLS: frozenset[str] = frozenset({
 
 def get_market_type(symbol: str) -> str:
     """
-    심볼 문자열로 시장 유형을 분류합니다.
+    기존 ATR 배수·보고 표시용 분류를 반환합니다.
+
+    ETF 자산 분류는 유지하며, 거래 시장·시간 게이트는 get_trading_market을 사용합니다.
 
     Returns
     -------

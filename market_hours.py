@@ -31,7 +31,7 @@ US_ACTIVE = (dt.time(4, 0), dt.time(20, 0))
 _MARKET_RULES = {
     "KR":  (SEOUL,    KR_ACTIVE),
     "US":  (NEW_YORK, US_ACTIVE),
-    "ETF": (NEW_YORK, US_ACTIVE),
+    "ETF": (NEW_YORK, US_ACTIVE),  # 과거 직접 호출 호환용 미국 시장 별칭
 }
 
 
@@ -40,7 +40,8 @@ def is_market_active(market: str, now_utc: dt.datetime) -> bool:
 
     Parameters
     ----------
-    market  : "KR" | "US" | "ETF" | "Crypto" (config.get_market_type 의 반환값)
+    market  : "KR" | "US" | "Crypto" (get_trading_market 의 거래시장 분류).
+              과거 직접 호출의 "ETF"는 미국 시간 별칭으로 유지한다.
     now_utc : timezone-aware datetime. 지역 시간대로 변환해 판정한다.
     """
     if market == "Crypto":

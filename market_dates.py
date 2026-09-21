@@ -7,6 +7,8 @@ This module does not decide whether a market is open or a quote is recent enough
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
+from symbol_market import get_trading_market
+
 
 def utc_now(now_utc: datetime | None = None) -> datetime:
     """Return an aware UTC instant; reject ambiguous injected naive clocks."""
@@ -27,12 +29,8 @@ def market_timezone(symbol: str) -> ZoneInfo:
     KR suffixes take precedence over ETF classification. This affects dates
     only and does not change ATR multipliers or market activation policy.
     """
-    normalized = symbol.strip().upper()
-    if normalized.endswith((".KS", ".KQ")):
-        return ZoneInfo("Asia/Seoul")
-    if normalized.endswith(("-USD", "-USDT")):
-        return ZoneInfo("UTC")
-    return ZoneInfo("America/New_York")
+    zone = {"KR": "Asia/Seoul", "Crypto": "UTC", "US": "America/New_York"}
+    return ZoneInfo(zone[get_trading_market(symbol)])
 
 
 def market_date(symbol: str, now_utc: datetime | None = None) -> date:
