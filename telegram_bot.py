@@ -200,32 +200,34 @@ def send_photo(image_bytes: bytes, caption: str = "") -> bool:
     return False
 
 
-def send_long_message(text: str, parse_mode: str = "Markdown") -> None:
+def send_long_message(text: str, parse_mode: str = "Markdown") -> bool:
     """
     4096자 초과 메시지를 줄 단위로 분할하여 순서대로 전송합니다.
 
     Telegram sendMessage 최대 길이(4096자)를 초과하는 일일 리포트 등에 사용.
+    한 조각이라도 실패하면 False — 나머지 조각은 그대로 보낸다.
     """
     MAX = 2500   # 이모지 UTF-16 2-code-unit 계산 여유 (4096 - 이모지 오버헤드)
     if len(text) <= MAX:
-        send_message(text, parse_mode)
-        return
+        return send_message(text, parse_mode)
 
     lines     = text.split("\n")
     chunk: list[str] = []
     size      = 0
+    ok        = True
 
     for line in lines:
         line_len = len(line) + 1          # +1 for \n
         if size + line_len > MAX and chunk:
-            send_message("\n".join(chunk), parse_mode)
+            ok = send_message("\n".join(chunk), parse_mode) and ok
             chunk = []
             size  = 0
         chunk.append(line)
         size += line_len
 
     if chunk:
-        send_message("\n".join(chunk), parse_mode)
+        ok = send_message("\n".join(chunk), parse_mode) and ok
+    return ok
 
 
 # ─────────────────────────────────────────────────────────────
@@ -435,24 +437,18 @@ def fmt_chandelier_report(chandelier_results: list) -> str:
 # 일일 종가 요약 (종가 창 전용)
 #
 # 주간 리포트는 그대로 둔다 — 바차트 + Chandelier 전 종목 나열 + 종목별 미니차트 N장.
-# 매일 종가에는 텍스트 1건만 보낸다. 이미지가 없으니 rate limit 대기(장당 4초)가 없고
-# 실행이 빠르다. 보유가 78종목이라 이름 나열에는 상한을 둔다.
+# 매일 종가에는 텍스트만 보낸다. 이미지가 없으니 rate limit 대기(장당 4초)가 없고
+# 실행이 빠르다. 이탈·근접 종목은 전부 나열한다(2026-09-21 소유자 결정 — "… 외 N개" 로
+# 접으면 어느 종목을 손봐야 하는지 알 수 없다). 길어지면 send_long_message 가 나눠 보낸다.
 # ─────────────────────────────────────────────────────────────
 
-BRIEF_NAME_LIMIT = 5
-
-
 def _brief_names(results: list) -> list:
-    """Stop 거리가 가까운 순으로 몇 개만 이름을 남기고 나머지는 접는다. 종목마다 한 줄.
+    """Stop 거리가 가까운 순으로 전 종목의 이름을 나열한다. 종목마다 한 줄.
 
     쉼표로 한 줄에 이으면 "회사명 | 티커" 가 길어 어디서 끊기는지 읽히지 않는다.
     """
     ordered = sorted(results, key=lambda r: r.dist_to_stop_pct)
-    lines   = [f"  • {fmt_symbol(r.symbol)}" for r in ordered[:BRIEF_NAME_LIMIT]]
-    rest    = len(ordered) - len(lines)
-    if rest > 0:
-        lines.append(f"  … 외 {rest}개")
-    return lines
+    return [f"  • {fmt_symbol(r.symbol)}" for r in ordered]
 
 
 def fmt_daily_brief(
@@ -462,7 +458,7 @@ def fmt_daily_brief(
     spike_count: int = 0,
     updated_count: int = 0,
 ) -> str:
-    """종가 요약 — 이탈/근접/여유 개수와 이름 일부만.
+    """종가 요약 — 이탈/근접/여유 개수, 이탈·근접은 이름까지 전부.
 
     is_near_stop 은 이탈을 포함하므로 그대로 세면 이탈 종목이 두 번 잡힌다. 셋을 서로소로 나눈다.
     """

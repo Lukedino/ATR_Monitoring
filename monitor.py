@@ -116,11 +116,13 @@ def _is_market_active_for_triggers(symbol: str) -> bool:
 
 @dataclass
 class StopCheckResult:
-    """종가 창의 일일 요약에 필요한 값. 요약이 붙지 않는 창에서는 쓰이지 않는다."""
-    chandelier:    list
-    updated_count: int
-    ohlcv_map:     dict
-    data_date:     str
+    """종가 창의 일일 요약에 필요한 값. 요약이 붙지 않는 창에서는 쓰이지 않는다.
+
+    전 종목 결과다 — 요약은 창의 시장 종목만 골라 쓴다(_send_daily_brief).
+    """
+    chandelier:      list
+    updated_symbols: list
+    ohlcv_map:       dict
 
 
 # ── 실행 중 생긴 문제 모음 ──────────────────────────────────────────────────
@@ -173,7 +175,7 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
     logger.info("Stop 갱신 체크 시작 (%d종목)", len(syms))
     ohlcv_map   = fetch_portfolio(syms)
     stop_recs   = load_stops()
-    updated_count = 0
+    updated_symbols: list[str] = []
 
     chandelier_list = []
     failed: list[str] = []
@@ -221,7 +223,7 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
                 # 알림이 나간 뒤에 저장한다. 순서가 반대면 전송 실패 시 '지정가 갱신 필요' 가 영영 사라진다.
                 if tg.send_message(tg.fmt_stop_update(pending)):
                     result = update_stop(**stop_args)
-                    updated_count += 1
+                    updated_symbols.append(symbol)
                     _send_chart_quietly(symbol, df, result.new_stop,
                                         f"{symbol} Stop 갱신: {result.prev_stop:,.2f} -> {result.new_stop:,.2f}")
                     logger.info("Stop 갱신 알림 전송: %s", symbol)
@@ -236,7 +238,7 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
     if unsent:
         _note_problem(f"텔레그램 전송 실패 {unsent}건 — 기록하지 않았으므로 다음 실행이 다시 보낸다")
 
-    if not updated_count:
+    if not updated_symbols:
         logger.info("Stop 갱신 없음 (전 종목 유지)")
 
     # 시세를 못 받은 종목이 많으면 '트리거 없음' 은 '못 봤다' 는 뜻이다(ATR-04). 받은 종목은 위에서
@@ -248,10 +250,9 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
 
     logger.info("Stop 갱신 체크 완료")
     return StopCheckResult(
-        chandelier    = chandelier_list,
-        updated_count = updated_count,
-        ohlcv_map     = ohlcv_map,
-        data_date     = _get_data_date(ohlcv_map),
+        chandelier      = chandelier_list,
+        updated_symbols = updated_symbols,
+        ohlcv_map       = ohlcv_map,
     )
 
 
@@ -411,30 +412,41 @@ def job_trigger_check() -> None:
 # 2026-09-17 부터는 PA 디스패처가 창마다 1회 job=auto 로 부른다 — 이 함수는 그대로 맞물린다.
 # ─────────────────────────────────────────────────────────────
 
-_WINDOW_SYMBOLS = {
-    "KR":     KR_SYMBOLS,
-    "US":     US_SYMBOLS,      # ETF 포함 (config.US_SYMBOLS = KR·크립토가 아닌 전부)
-    "Crypto": CRYPTO_SYMBOLS,
+# 종가 요약 창(market_hours 의 brief=True)별 제목과 셀 종목. 보유가 어느 요약에서도 빠지지 않게
+# 한 번씩만 들어간다. 크립토는 전용 종가 창이 없어 US 요약에 붙인다 — 주간 리포트와 같은 묶음.
+_BRIEF_SCOPE = {
+    "KR": ("KR 종가 요약",        KR_SYMBOLS),
+    "US": ("US/크립토 종가 요약", US_SYMBOLS + CRYPTO_SYMBOLS),   # US_SYMBOLS = KR·크립토가 아닌 전부(ETF 포함)
 }
 
 
 def _send_daily_brief(window, result: StopCheckResult) -> None:
-    """종가 요약 — 텍스트 1건. 주간 리포트와 달리 차트를 붙이지 않는다."""
+    """종가 요약 — 텍스트만. 주간 리포트와 달리 차트를 붙이지 않는다.
+
+    result 는 전 종목이다(안전망 stop_check). 창의 시장 종목만 골라 센다 — 09-15 에 stop_check 을
+    전 종목으로 넓히면서 이 필터가 빠져 "KR 종가 요약" 에 미국 종목이 섞였다(2026-09-21 발견).
+    기준일도 그 시장 종목끼리 다시 구한다. 전 종목 최빈값은 미국 거래일일 수 있다.
+    """
+    title, symbols = _BRIEF_SCOPE[window.market]
+    scope      = set(symbols)
+    chandelier = [ch for ch in result.chandelier if ch.symbol in scope]
+    ohlcv_map  = {s: df for s, df in result.ohlcv_map.items() if s in scope}
+
     spike_count = 0
     try:
-        summary = summarize_portfolio_atr(result.ohlcv_map, ATR_PERIOD)
+        summary = summarize_portfolio_atr(ohlcv_map, ATR_PERIOD)
         if not summary.empty and "Spike" in summary.columns:
             spike_count = int(summary["Spike"].astype(bool).sum())
     except Exception as exc:
         # 요약의 곁가지일 뿐이라 실패해도 본문은 보낸다
         logger.warning("스파이크 집계 실패 — 요약에서 생략: %s", exc)
 
-    sent = tg.send_message(tg.fmt_daily_brief(
-        f"{window.market} 종가 요약",
-        result.data_date,
-        result.chandelier,
+    sent = tg.send_long_message(tg.fmt_daily_brief(
+        title,
+        _get_data_date(ohlcv_map),
+        chandelier,
         spike_count   = spike_count,
-        updated_count = result.updated_count,
+        updated_count = sum(1 for s in result.updated_symbols if s in scope),
     ))
     if not sent:
         # 호출자가 창을 완료로 적지 않게 실패로 올린다(ATR-03) — 다음 실행이 다시 보낸다.

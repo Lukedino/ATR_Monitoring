@@ -121,7 +121,7 @@ def test_failed_stop_update_notice_leaves_the_stop_unchanged_for_a_retry(env):
 
 def test_failed_daily_brief_send_raises_so_the_window_stays_open(env):
     env.tg.ok = False
-    result = monitor.StopCheckResult(chandelier=[], updated_count=0, ohlcv_map={}, data_date="2026-09-18")
+    result = monitor.StopCheckResult(chandelier=[], updated_symbols=[], ohlcv_map={})
     with pytest.raises(RuntimeError):
         monitor._send_daily_brief(types.SimpleNamespace(market="KR"), result)
 
