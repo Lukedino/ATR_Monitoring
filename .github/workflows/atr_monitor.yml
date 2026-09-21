@@ -41,8 +41,9 @@ concurrency:
 jobs:
   atr-monitor:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
-    # stop_levels.json 변경 후 repo에 push하기 위한 쓰기 권한
+    # 상태 파일은 Drive에 저장한다. 저장소 쓰기 권한은 필요 없다.
     permissions:
       contents: read     # 2026-08-30: 상태 파일을 Drive 에 보관 → repo 쓰기 권한 불필요
 
@@ -50,6 +51,8 @@ jobs:
       # ── 1. 코드 체크아웃 ──────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # ── 2. Python 설정 ────────────────────────────────────
       - name: Setup Python 3.11
@@ -64,6 +67,9 @@ jobs:
 
       # ── 3.5 한글 폰트 설치 (차트 한글 렌더링) ─────────────
       - name: Install Korean fonts
+        id: fonts
+        timeout-minutes: 2
+        continue-on-error: true
         run: |
           sudo apt-get install -y fonts-nanum
           fc-cache -fv
@@ -71,17 +77,23 @@ jobs:
       # ── 4. 실행할 작업 결정 ───────────────────────────────
       - name: Determine job type
         id: job_type
+        shell: python
+        env:
+          REQUEST_EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_JOB: ${{ inputs.job }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "GHA_JOB=${{ inputs.job }}" >> $GITHUB_ENV
-          else
-            # workflow_dispatch 가 아닌 이벤트(수동 push 등 예외)는 창 판정에 맡긴다. 크론 문자열로
-            # 작업 종류를 고르던 방식은 표현식이 바뀔 때마다 조용히 어긋났다(커밋 153436e).
-            echo "GHA_JOB=auto" >> $GITHUB_ENV
-          fi
+          import os
+          allowed = {"auto", "stop_check", "crypto_stop_check", "kr_daily_report",
+                     "us_daily_report", "trigger_check"}
+          job = os.environ.get("REQUESTED_JOB", "") if os.environ.get("REQUEST_EVENT_NAME") == "workflow_dispatch" else "auto"
+          if job not in allowed:
+              raise SystemExit("Unsupported ATR job input")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write("GHA_JOB=" + job + "\n")
 
       # ── 5. ATR 모니터 실행 ────────────────────────────────
       - name: Run ATR Monitor
+        timeout-minutes: 20
         env:
           # 텔레그램
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -101,4 +113,12 @@ jobs:
           GITHUB_ACTIONS:     'true'
         run: python monitor.py
 
-      # ── 6. stop_levels.json 변경 시 커밋 & 푸시 ─────────
+      # 일반 단계 실패의 보완 알림. 앱 알림과 중복될 수 있으며,
+      # job 전체 취소/timeout·미시작까지 보장하는 독립 감시는 아니다.
+      - name: Notify workflow failure
+        if: ${{ failure() }}
+        timeout-minutes: 2
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/notify_workflow_failure.py

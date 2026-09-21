@@ -58,12 +58,23 @@ def _md5(b: bytes) -> str:
 
 
 def build_service(sa_json: str):
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    creds = service_account.Credentials.from_service_account_info(
-        json.loads(sa_json), scopes=["https://www.googleapis.com/auth/drive"],   # update() 에는 drive.readonly 부족
-    )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+    # Google/HTTP exceptions can embed credentials, URLs and file identifiers.
+    # Keep the stage, never the original exception text or traceback chain.
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+    except Exception:
+        raise StateSyncError("Drive client dependency initialization failed") from None
+    try:
+        creds = service_account.Credentials.from_service_account_info(
+            json.loads(sa_json), scopes=["https://www.googleapis.com/auth/drive"],
+        )
+    except Exception:
+        raise StateSyncError("Drive authentication configuration failed") from None
+    try:
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
+    except Exception:
+        raise StateSyncError("Drive service initialization failed") from None
 
 
 class DriveState:
@@ -75,13 +86,17 @@ class DriveState:
 
     @state_locked
     def pull(self) -> dict:
-        raw  = self.service.files().get_media(fileId=self.file_id).execute()
+        try:
+            raw = self.service.files().get_media(fileId=self.file_id).execute()
+        except Exception:
+            raise StateSyncError("Drive state download failed") from None
         data = validate_state_bytes(raw)              # 실패 시 로컬 파일은 건드리지 않는다
+        downloaded_md5 = _md5(raw)
         try:
             atomic_write_state_bytes(self.local_path, raw)
         except StateValidationError as error:
             raise StateSyncError(str(error)) from None
-        self._pulled_md5 = _md5(raw)
+        self._pulled_md5 = downloaded_md5
         logger.info("Drive 상태 파일 로드 — %d bytes, alert_log %d건", len(raw), len(data.get("alert_log", {})))
         return data
 
@@ -94,16 +109,25 @@ class DriveState:
             raw = self.local_path.read_bytes()
         except OSError:
             raise StateSyncError("Local state file could not be read") from None
-        if _md5(raw) == self._pulled_md5:
+        local_md5 = _md5(raw)
+        if local_md5 == self._pulled_md5:
             return False
         validate_state_bytes(raw)                     # 깨진 로컬로 Drive 의 멀쩡한 상태를 덮어쓰지 않는다
-        from googleapiclient.http import MediaIoBaseUpload
-        media = MediaIoBaseUpload(io.BytesIO(raw), mimetype="application/json", resumable=False)
-        resp  = self.service.files().update(fileId=self.file_id, media_body=media,
-                                            fields="id,size,md5Checksum").execute()
-        if resp.get("md5Checksum") != _md5(raw):
-            raise StateSyncError("Drive 업로드 후 md5 불일치 — 상태 저장 실패")
-        self._pulled_md5 = _md5(raw)
+        try:
+            from googleapiclient.http import MediaIoBaseUpload
+            media = MediaIoBaseUpload(io.BytesIO(raw), mimetype="application/json", resumable=False)
+        except Exception:
+            raise StateSyncError("Drive upload preparation failed") from None
+        try:
+            # One attempt only: a timeout may occur after the server committed.
+            # Do not retry an uncertain write or advance the acknowledged MD5.
+            resp = self.service.files().update(fileId=self.file_id, media_body=media,
+                                               fields="id,size,md5Checksum").execute()
+        except Exception:
+            raise StateSyncError("Drive state upload failed; remote result is unconfirmed") from None
+        if not isinstance(resp, dict) or resp.get("md5Checksum") != local_md5:
+            raise StateSyncError("Drive upload verification failed; remote result is unconfirmed")
+        self._pulled_md5 = local_md5
         logger.info("Drive 상태 파일 갱신 — %d bytes", len(raw))
         return True
 
@@ -118,4 +142,9 @@ def from_env(local_path: Path) -> DriveState | None:
             raise StateSyncError(f"GitHub Actions 에서는 {STATE_FILE_ID_ENV} 와 {SA_JSON_ENV} Secret 이 필요합니다")
         logger.warning("%s 미설정 — 로컬 파일만 사용 (Drive 동기화 없음)", STATE_FILE_ID_ENV)
         return None
-    return DriveState(local_path, file_id, build_service(sa_json))
+    try:
+        return DriveState(local_path, file_id, build_service(sa_json))
+    except StateSyncError:
+        raise
+    except Exception:
+        raise StateSyncError("Drive state initialization failed") from None

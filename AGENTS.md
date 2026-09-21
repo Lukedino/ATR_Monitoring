@@ -1,5 +1,7 @@
 > 이 문서는 Codex 등 외부 에이전트용 안내문이다. 2026-09-18 작성.
 
+> 2026-09-22 후속 구현: Drive의 인증·통신·업로드 예외는 민감 원문 없는 `StateSyncError`로 전달한다. GHA import 전 예외 보호, 상태에만 남은 심볼 마스크 확장, 일반 workflow 실패 보완 알림을 추가했다. 테스트는 `python scripts/run_offline_tests.py`로 코드 사본에서 수행한다. `docs/runtime-safety.md`의 현재 동작·검증 한계가 아래 과거 리뷰 기록보다 우선한다. 실제 Drive/Telegram 실행과 거래·시장 시간 정책 변경은 별도 범위다.
+
 > 2026-09-22 구현 반영: ATR 계산은 H/L/C 이력과 최신 ATR의 유효성을 확인한다(Open이 없는 부분 봉은 허용). 로컬 상태는 `state_validation.py`에서 스키마를 검사하고 원자적으로 저장하며, 같은 프로세스의 갱신은 RLock으로 직렬화한다. 명시한 포트폴리오 설정이 잘못되면 예시 목록으로 전환하지 않고 실행을 중단한다. 아래 리뷰 당시 기록보다 이 안내와 `docs/input-state-hardening.md`의 현재 계약을 우선한다. 실제 입력·자격증명·운영 데이터에 대한 5절의 보호 규칙은 유지한다.
 
 > 2026-09-20: 아래 7절의 "알림 누락 경로"·"조용한 fallback" 중 다수가 수정됐다 — 종목별 예외 격리, 전송 성공 후에만 기록, Stop 은 알림 전송 뒤 저장(`update_stop(commit=False)`), 수집률 80% 미만·포트폴리오 출처 이상은 실패 처리, `send_message` 재시도, 문제가 있던 실행은 종료코드 1. 상세는 `DEVLOG.md` 2026-09-20 절, 회귀 테스트는 `tests/test_silent_failures.py`.
@@ -22,8 +24,9 @@
 | `data_collector.py` | OHLCV 수집·최신가 동기화·심볼 교정(접미사 뒤집기, 크립토 숫자 ID 변종) |
 | `atr_calculator.py` / `visualizer.py` / `telegram_bot.py` | ATR·Chandelier·트리거 계산 / 차트 PNG / 전송·메시지 포맷 |
 | `dispatcher_schedules.py` → `dispatcher_schedules.json` | 창 정의에서 외부 디스패처용 슬롯(UTC cron) 목록을 생성한 산출물 |
-| `.github/workflows/atr_monitor.yml` | 유일한 워크플로 |
-| `tests/` | pytest 9개 파일 121건(2026-09-18 로컬 실행 기준 전부 통과) |
+| `.github/workflows/atr_monitor.yml` | PA dispatch 전용 운영 워크플로 |
+| `.github/workflows/tests.yml` / `scripts/run_offline_tests.py` | 자격증명 없는 Python 3.11/3.12 합성 CI·코드 사본 실행기 |
+| `tests/` | 계산·상태·실패·마스킹·워크플로 합성 회귀 |
 | `analysis/` | ATR 배수 검증용 일회성 스크립트와 집계 결과. 운영 경로 아님 |
 | `DEVLOG.md`, `setup_github.sh`, `.env.example` | 개발 일지, 최초 업로드 스크립트, 환경변수 견본 |
 
@@ -38,14 +41,15 @@
 
 ## 4. 로컬 실행·테스트
 ```bash
-pip install -r requirements.txt      # 버전 고정(공급망 방어). pytest 는 목록에 없어 별도 설치
-python -m pytest tests -q            # 121 passed. 네트워크·자격증명 불필요
+pip install -r requirements-dev.txt  # 운영 의존성과 고정 pytest 설치
+python scripts/run_offline_tests.py --self-check  # 합성 I/O 차단 자체 검사
+python scripts/run_offline_tests.py  # 코드 사본에서 합성 전체 검사
 python dispatcher_schedules.py       # 창 정의 → dispatcher_schedules.json 재생성(테스트가 일치를 강제)
 python monitor.py --list-pos         # 그 밖의 CLI 옵션은 monitor.py 상단 docstring 참조
 ```
 - 상위 경로에 `[` `]` 가 있으면 인자 없는 `pytest` 는 "path cannot contain [] parametrization" 으로 실패한다 → `tests` 를 명시한다.
 - `.env` 없이 실행하면 `config.py` 의 테스트용 fallback 심볼로 돈다. 텔레그램 미설정 시 전송은 경고만 남기고 생략된다.
-- CI 에서 테스트를 돌리는 워크플로는 없다(워크플로 파일은 1개뿐).
+- 합성 CI는 main push/PR 또는 별도 수동 실행으로 동작한다. 운영 workflow의 dispatch 전용·PA 스케줄 계약은 그대로다.
 
 ## 5. 절대 규칙
 1. **보유 정보를 어디에도 쓰지 않는다** — 리뷰 결과·커밋 메시지·문서·이슈·테스트 픽스처에 실제 티커, 종목명, 계좌명, 수량, 진입가, 금액을 적지 말 것. 예시가 필요하면 `SYM-xxxx` 같은 가명이나 명백한 가상 값을 쓴다.

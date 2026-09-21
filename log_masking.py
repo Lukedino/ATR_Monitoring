@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import sys
+import threading
 from typing import Iterable, Mapping, TextIO
 
 # add-mask 에 등록할 최소 길이. GHA 는 마스크를 토큰 경계 없이 치환하므로 T(AT&T)·F(Ford)·SPY
@@ -49,6 +50,17 @@ _KR_SUFFIXES     = (".KS", ".KQ")
 _CRYPTO_SUFFIXES = ("-USDT", "-USD")
 
 logger = logging.getLogger("log_masking")
+
+# Request errors often embed complete URLs, including credentials and file IDs.
+# Retain the surrounding diagnostic text, never the URL's path/query/userinfo.
+_URL = re.compile(r"\b(?:https?|ftp)://[^\s<>\"']+", re.IGNORECASE)
+_AUTHORIZATION = re.compile(r"\bauthorization[\"']?\s*[:=]\s*[\"']?[^,\r\n}\"']+", re.IGNORECASE)
+_SECRET_FIELD = re.compile(
+    r"\b(?:access_token|refresh_token|api[_-]?key|bot_token|token|chat_id|client_secret|authorization)"
+    r"[\"']?\s*[:=]\s*[\"']?[^\s,;\"'}]+", re.IGNORECASE,
+)
+_installed_filter: RedactingFilter | None = None
+_record_factory_enabled = False
 
 
 def _digest(secret: str, salt: str | None) -> str:
@@ -104,7 +116,7 @@ def build_mask_map(
 def _pattern_for(secret: str) -> str:
     """비밀 문자열이 로그에 실제로 나타나는 형태를 덮는 정규식 조각."""
     # 종목명 등 비티커는 경계를 걸지 않는다 — 한국어 조사 때문.
-    if not _TICKER_LIKE.match(secret):
+    if not _TICKER_LIKE.fullmatch(secret):
         return re.escape(secret)
     upper = secret.upper()
     for suffix in _CRYPTO_SUFFIXES:
@@ -120,24 +132,69 @@ class RedactingFilter(logging.Filter):
 
     def __init__(self, mask_map: Mapping[str, str]) -> None:
         super().__init__()
-        # 긴 비밀을 먼저 치환해야 BTC-USD 가 반쪽 치환되지 않는다.
-        # 야후 심볼이 소문자로 내려오는 경로가 있어 IGNORECASE.
-        self._rules = [
-            (re.compile(_pattern_for(secret), re.IGNORECASE), pseudonym)
-            for secret, pseudonym in sorted(
-                ((k, v) for k, v in mask_map.items() if k), key=lambda kv: len(kv[0]), reverse=True
-            )
-        ]
+        self._lock = threading.RLock()
+        self._mask_map: dict[str, str] = {}
+        self.extend(mask_map)
+
+    def extend(self, mask_map: Mapping[str, str]) -> None:
+        """Update one installed filter so state-only symbols cover existing handlers."""
+        with self._lock:
+            self._mask_map.update(mask_map)
+            pairs = sorted(((key, value) for key, value in self._mask_map.items() if key),
+                           key=lambda pair: len(pair[0]), reverse=True)
+            self._replacements = {f"mask_{i}": value for i, (_, value) in enumerate(pairs)}
+            self._pattern = re.compile("|".join(
+                f"(?P<mask_{i}>{_pattern_for(secret)})" for i, (secret, _) in enumerate(pairs)
+            ), re.IGNORECASE) if pairs else None
+
+    def redact(self, text: str) -> str:
+        text = _URL.sub("[REDACTED_URL]", text)
+        text = _AUTHORIZATION.sub("[REDACTED_CREDENTIAL]", text)
+        text = _SECRET_FIELD.sub("[REDACTED_CREDENTIAL]", text)
+        with self._lock:
+            if self._pattern is not None:
+                text = self._pattern.sub(lambda match: self._replacements[match.lastgroup], text)
+        return text
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if not self._rules:
+        if getattr(record, "_atr_redacted_by", None) == id(self):
             return True
+        # 긴 비밀을 먼저 치환해야 BTC-USD 가 반쪽 치환되지 않는다.
+        # 야후 심볼이 소문자로 내려오는 경로가 있어 IGNORECASE.
         # 포맷을 먼저 끝낸 뒤 치환한다. args 를 먼저 치환하면 %.4f·%d 포맷이 깨진다.
-        message = masked = record.getMessage()
-        for pattern, pseudonym in self._rules:
-            masked = pattern.sub(pseudonym, masked)
+        # Exception objects are the one exception: %s must not call their
+        # potentially credential-bearing __str__. Numeric arguments stay numeric.
+        if isinstance(record.msg, BaseException):
+            record.msg = f"{type(record.msg).__name__}: [exception details withheld]"
+        if isinstance(record.args, tuple):
+            record.args = tuple(f"{type(value).__name__}: [exception details withheld]"
+                                if isinstance(value, BaseException) else value for value in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {key: f"{type(value).__name__}: [exception details withheld]"
+                          if isinstance(value, BaseException) else value for key, value in record.args.items()}
+        try:
+            message = record.getMessage()
+        except Exception:
+            # Logging's default formatting-error diagnostic echoes raw args to
+            # stderr. Fail closed rather than letting that path reveal values.
+            record.msg, record.args = "[log message formatting failed]", ()
+            message = record.msg
+        masked = self.redact(message)
         if masked != message:
             record.msg, record.args = masked, ()
+        # Formatter appends exception/stack text *after* getMessage(). Keeping
+        # exc_info would let a second handler reconstruct the private traceback.
+        if record.exc_info:
+            exception_type = record.exc_info[0]
+            record.exc_text = f"{getattr(exception_type, '__name__', 'Exception')}: [exception details withheld]"
+            record.exc_info = None
+            record._exception_redacted = True
+        elif record.exc_text and not getattr(record, "_exception_redacted", False):
+            record.exc_text = "[exception details withheld]"
+            record._exception_redacted = True
+        if record.stack_info:
+            record.stack_info = self.redact(record.stack_info)
+        record._atr_redacted_by = id(self)
         return True
 
 
@@ -152,7 +209,8 @@ def emit_gha_masks(values: Iterable[str], stream: TextIO | None = None) -> None:
         for variant in (value, value.upper(), value.lower()):
             if variant not in seen:
                 seen.add(variant)
-                out.write(f"::add-mask::{variant}\n")
+                escaped = variant.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                out.write(f"::add-mask::{escaped}\n")
     out.flush()
 
 
@@ -164,14 +222,17 @@ def install(
     stream: TextIO | None = None,
 ) -> dict[str, str]:
     """루트 로거의 모든 핸들러에 마스킹을 걸고 GHA add-mask 를 발행한다."""
+    global _installed_filter
     mask_map = build_mask_map(symbols, names, salt=salt)
-    if not mask_map:
-        return mask_map
     log_filter = RedactingFilter(mask_map)
     # 필터는 로거가 아니라 핸들러에 붙인다. 로거에 붙이면 data_collector 같은
     # 자식 로거가 만든 레코드에는 적용되지 않는다(logging 의 filter 전파 규칙).
     for handler in logging.getLogger().handlers:
+        for old_filter in list(handler.filters):
+            if isinstance(old_filter, RedactingFilter):
+                handler.removeFilter(old_filter)
         handler.addFilter(log_filter)
+    _installed_filter = log_filter
     emit_gha_masks(mask_map.keys(), stream=stream)
     return mask_map
 
@@ -203,4 +264,84 @@ def install_for_github_actions(
     symbols = list(symbols)
     # config.KR_STOCK_NAMES 는 보유와 무관한 국내 종목명 표까지 담고 있다 → 보유분만 마스킹한다.
     held_names = {s: names[s] for s in symbols if names and s in names}
-    return install(symbols, held_names, salt=salt, stream=stream)
+    result = install(symbols, held_names, salt=salt, stream=stream)
+    # Raw interpreter/thread tracebacks bypass logging filters and GHA's short
+    # symbol masks. Keep the failure visible without printing exception values.
+    install_exception_hooks_for_github_actions(env=env)
+    _install_record_factory()
+    return result
+
+
+def _install_record_factory() -> None:
+    global _record_factory_enabled
+    _record_factory_enabled = True
+    previous_factory = logging.getLogRecordFactory()
+    if getattr(previous_factory, "_atr_masking_factory", False):
+        return
+
+    def masked_record_factory(*args, **kwargs):
+        record = previous_factory(*args, **kwargs)
+        if _record_factory_enabled and _installed_filter is not None:
+            _installed_filter.filter(record)
+        return record
+
+    masked_record_factory._atr_masking_factory = True
+    logging.setLogRecordFactory(masked_record_factory)
+
+
+def install_exception_hooks_for_github_actions(env: Mapping[str, str] | None = None) -> None:
+    """Protect bootstrap failures before config/third-party imports; stdlib only."""
+    env = os.environ if env is None else env
+    if env.get("GITHUB_ACTIONS", "").lower() == "true":
+        sys.excepthook = _safe_excepthook
+        threading.excepthook = _safe_thread_excepthook
+
+
+def _safe_excepthook(exception_type, exception, traceback) -> None:
+    try:
+        logger.critical("Unhandled %s; exception details withheld", exception_type.__name__)
+    except BaseException:
+        # An excepthook failure makes Python print both failures verbatim.
+        # A broken logging backend must not reopen that disclosure path.
+        try:
+            sys.stderr.write("Unhandled exception; exception details withheld\n")
+            sys.stderr.flush()
+        except BaseException:
+            pass
+
+
+def _safe_thread_excepthook(args) -> None:
+    _safe_excepthook(args.exc_type, args.exc_value, args.exc_traceback)
+
+
+def register_state_symbols_for_github_actions(
+    state_data: Mapping,
+    names: Mapping[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
+    stream: TextIO | None = None,
+) -> dict[str, str]:
+    """Extend masks from a validated pull result, without opening any state file.
+
+    Only position/alert keys identify symbols. Unknown state fields, numeric
+    values and trigger bodies are never collected or emitted as GHA commands.
+    """
+    env = os.environ if env is None else env
+    if env.get("GITHUB_ACTIONS", "").lower() != "true":
+        return {}
+    symbols = set()
+    if isinstance(state_data, Mapping):
+        for section in ("positions", "alert_log"):
+            records = state_data.get(section, {})
+            if isinstance(records, Mapping):
+                symbols.update(symbol for symbol in records if isinstance(symbol, str) and symbol)
+    held_names = {symbol: names[symbol] for symbol in symbols if names and symbol in names}
+    mask_map = build_mask_map(sorted(symbols), held_names, salt=_resolve_salt(env))
+    if _installed_filter is None:
+        install_for_github_actions(symbols, names, env=env, stream=stream)
+    else:
+        _installed_filter.extend(mask_map)
+        for handler in logging.getLogger().handlers:
+            if _installed_filter not in handler.filters:
+                handler.addFilter(_installed_filter)
+        emit_gha_masks(mask_map, stream=stream)
+    return mask_map

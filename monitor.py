@@ -36,6 +36,9 @@ import os
 import sys
 import time
 
+import log_masking
+log_masking.install_exception_hooks_for_github_actions()
+
 import schedule
 
 import config as _config
@@ -73,7 +76,6 @@ from stop_manager import (
     mark_window_done,
 )
 import telegram_bot as tg
-import log_masking
 import market_hours
 from dataclasses import dataclass
 
@@ -458,7 +460,7 @@ def _send_daily_brief(window, result: StopCheckResult) -> None:
             spike_count = int(summary["Spike"].astype(bool).sum())
     except Exception as exc:
         # 요약의 곁가지일 뿐이라 실패해도 본문은 보낸다
-        logger.warning("스파이크 집계 실패 — 요약에서 생략: %s", exc)
+        logger.warning("스파이크 집계 실패 — 요약에서 생략 (%s)", type(exc).__name__)
 
     sent = tg.send_long_message(tg.fmt_daily_brief(
         title,
@@ -503,7 +505,7 @@ def run_due_windows(now_utc=None) -> None:
         result = job_stop_check()
     except Exception as exc:
         # 손절 체크가 실패해도 요약·리포트 시도는 막지 않는다. 다만 조용히 넘기지는 않는다.
-        _note_problem(f"전 종목 stop_check 실패: {type(exc).__name__}: {exc}")
+        _note_problem(f"전 종목 stop_check 실패: {type(exc).__name__}")
 
     for window in market_hours.due_windows(now):
         if window.action == "stop_check" and not window.brief:
@@ -519,7 +521,7 @@ def run_due_windows(now_utc=None) -> None:
             _run_window_extra(window, result)
         except Exception as exc:
             # 실패를 완료로 적으면 그날 그 창은 영영 안 간다 → 표시하지 않고 재시도에 맡긴다
-            _note_problem(f"창 추가 작업 실패({window.name}) — 완료 표시 안 함: {type(exc).__name__}: {exc}")
+            _note_problem(f"창 추가 작업 실패({window.name}) — 완료 표시 안 함: {type(exc).__name__}")
             continue
 
         mark_window_done(window.name, local_date)
@@ -563,7 +565,8 @@ def run_github_actions_mode() -> None:
     try:
         state = drive_state.from_env(STATE_FILE)
         if state is not None:
-            state.pull()
+            loaded_state = state.pull()
+            log_masking.register_state_symbols_for_github_actions(loaded_state, KR_STOCK_NAMES)
     except drive_state.StateSyncError as e:
         logger.error("상태 파일 로드 실패: %s", e)
         tg.send_message(f"⚠️ ATR 모니터 중단 — 상태 파일 로드 실패: {e}")
@@ -573,15 +576,16 @@ def run_github_actions_mode() -> None:
         fn()
     except StateValidationError as error:
         _note_problem("상태 검증 실패: " + str(error))
+    except Exception as error:
+        # Third-party exceptions can contain private state or credential URLs.
+        _note_problem("작업 실행 실패: " + type(error).__name__)
     finally:
         # 작업이 도중에 실패해도 그때까지 보낸 알림 이력은 저장한다 (중복 알림 방지)
         if state is not None:
             try:
                 state.push()
             except drive_state.StateSyncError as e:
-                logger.error("상태 파일 저장 실패: %s", e)
-                tg.send_message(f"⚠️ ATR 상태 파일 저장 실패 — 다음 실행에서 알림이 중복될 수 있음: {e}")
-                raise
+                _note_problem("상태 파일 저장 실패 — 원격 반영 미확정: " + str(e))
     if _problems:
         # 상태는 위에서 이미 저장했다. 실패를 초록색으로 끝내지 않는다.
         lines = "\n".join(f"• {problem}" for problem in _problems[:10])

@@ -33,6 +33,8 @@ def test_workflow_dispatch_job_input_offers_auto():
 
 def test_dispatched_runs_use_inputs_job_and_everything_else_falls_back_to_auto():
     src = _src()
-    assert "GHA_JOB=${{ inputs.job }}" in src
-    assert "GHA_JOB=auto" in src
+    assert "REQUESTED_JOB: ${{ inputs.job }}" in src
+    assert 'os.environ.get("REQUESTED_JOB", "")' in src
+    assert 'else "auto"' in src
+    assert 'output.write("GHA_JOB=" + job + "\\n")' in src
     assert "github.event.schedule" not in src
