@@ -54,10 +54,12 @@ from data_collector import fetch_portfolio, fetch_ohlcv
 from atr_calculator import (
     summarize_portfolio_atr,
     calc_chandelier_stop,
+    atr_input_issue,
     check_immediate_triggers,
 )
 from visualizer import plot_portfolio_atr_bar, plot_atr_chart
 import drive_state
+from state_validation import StateValidationError
 from stop_manager import (
     DATA_FILE as STATE_FILE,
     load_all as load_stops,
@@ -138,6 +140,8 @@ MIN_COLLECTION_RATIO = 0.8
 def _portfolio_problem() -> str | None:
     """감시 대상 목록을 믿을 수 있는지. 상태 파일은 로드 실패 시 중단하는데(fail-closed)
     포트폴리오는 조용히 예시 종목으로 넘어가던 비대칭을 없앤다(ATR-05)."""
+    if getattr(_config, "PORTFOLIO_ERROR", ""):
+        return "포트폴리오 설정 오류: " + _config.PORTFOLIO_ERROR
     if not ALL_SYMBOLS:
         return "감시 대상 0종목 — 포트폴리오 시트가 비었거나 헤더(Ticker·종목·구분)가 바뀌었습니다"
     if _config.DRIVE_PORTFOLIO_CONFIGURED and _config.PORTFOLIO_SOURCE != "drive":
@@ -187,6 +191,8 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
         try:
             ch = calc_chandelier_stop(symbol, df, ATR_PERIOD)
             if ch is None:
+                failed.append(symbol)
+                logger.error("ATR 계산 불가 — 상태 유지 (%s)", atr_input_issue(df, ATR_PERIOD) or "calculation_unavailable")
                 continue
             chandelier_list.append(ch)
 
@@ -545,7 +551,7 @@ def run_github_actions_mode() -> None:
         logger.error("알 수 없는 GHA_JOB: %s", job_name)
         sys.exit(1)
 
-    if os.getenv("GITHUB_ACTIONS") == "true":
+    if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
         problem = _portfolio_problem()
         if problem:
             logger.error("포트폴리오 점검 실패: %s", problem)
@@ -565,6 +571,8 @@ def run_github_actions_mode() -> None:
 
     try:
         fn()
+    except StateValidationError as error:
+        _note_problem("상태 검증 실패: " + str(error))
     finally:
         # 작업이 도중에 실패해도 그때까지 보낸 알림 이력은 저장한다 (중복 알림 방지)
         if state is not None:
@@ -638,6 +646,12 @@ def main() -> None:
     group.add_argument("--remove-pos",    metavar="SYMBOL")
     group.add_argument("--list-pos",      action="store_true")
     args = parser.parse_args()
+
+    # Explicitly broken source settings must not start a local collection job.
+    # Position administration remains available without loading a portfolio.
+    if getattr(_config, "PORTFOLIO_ERROR", "") and not (args.add_pos or args.remove_pos or args.list_pos):
+        logger.error("포트폴리오 점검 실패: %s", _portfolio_problem())
+        raise SystemExit(1)
 
     if args.once:
         job_kr_daily_report()

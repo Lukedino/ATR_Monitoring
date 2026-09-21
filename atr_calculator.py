@@ -35,6 +35,63 @@ logger = logging.getLogger(__name__)
 STOP_MISMATCH_RATIO = 1.5
 
 
+def _validated_price_frame(df: pd.DataFrame, min_rows: int = 1):
+    """Validate ATR's H/L/C history without filling or dropping price bars.
+
+    Open is not an ATR/Chandelier input. The collector can intentionally leave
+    it missing on a current quote; only gap detection requires a valid Open.
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return None, "empty_input"
+    required = ["High", "Low", "Close"]
+    if not set(required).issubset(df.columns) or df.columns.has_duplicates:
+        return None, "missing_price_columns"
+    if (isinstance(df.index, pd.MultiIndex) or df.index.hasnans or
+            df.index.has_duplicates or not df.index.is_monotonic_increasing):
+        return None, "invalid_index"
+    columns = required
+    try:
+        numeric = df[columns].apply(pd.to_numeric, errors="raise")
+        if (any(np.iscomplexobj(numeric[column]) for column in columns) or
+                df[columns].apply(lambda column: column.map(
+                    lambda value: isinstance(value, (bool, np.bool_)))).any().any()):
+            return None, "non_numeric_prices"
+        prices = numeric.astype(float)
+    except (ValueError, TypeError, OverflowError):
+        return None, "non_numeric_prices"
+    if not np.isfinite(prices.to_numpy()).all():
+        return None, "non_finite_prices"
+    if (prices <= 0).any().any():
+        return None, "non_positive_prices"
+    tolerance = prices.abs().max(axis=1) * 1e-7 + 1e-12
+    if ((prices.max(axis=1) - prices["High"] > tolerance).any() or
+            (prices["Low"] - prices.min(axis=1) > tolerance).any()):
+        return None, "inconsistent_prices"
+    if len(df) < min_rows:
+        return None, "insufficient_history"
+    return prices, None
+
+
+def atr_input_issue(df: pd.DataFrame, period: int = ATR_PERIOD,
+                    hh_window: int = 20) -> str | None:
+    """Return a value-free reason code for an unusable Chandelier input."""
+    if (isinstance(period, bool) or not isinstance(period, (int, np.integer)) or period < 1 or
+            isinstance(hh_window, bool) or not isinstance(hh_window, (int, np.integer)) or hh_window < 1):
+        return "invalid_period"
+    return _validated_price_frame(df, max(period, hh_window) + 1)[1]
+
+
+def _has_current_atr(series: pd.Series, index: pd.Index) -> bool:
+    """The last usable ATR must belong to the final supplied bar, not an older one."""
+    if series.empty or not series.index.equals(index):
+        return False
+    try:
+        latest = float(series.iloc[-1])
+    except (ValueError, TypeError, OverflowError):
+        return False
+    return bool(np.isfinite(latest) and latest >= 0)
+
+
 # ─────────────────────────────────────────────────────────────
 # True Range
 # ─────────────────────────────────────────────────────────────
@@ -42,11 +99,15 @@ STOP_MISMATCH_RATIO = 1.5
 def calc_true_range(df: pd.DataFrame) -> pd.Series:
     """
     데이터프레임(High, Low, Close 컬럼 필수)에서 True Range 시리즈 반환.
-    첫 번째 행은 NaN (이전 종가 없음).
+    첫 번째 행은 기존 계산대로 High - Low (이전 종가 없음).
+    잘못된 가격 이력은 빈 시리즈로 반환한다.
     """
-    high  = df["High"]
-    low   = df["Low"]
-    prev_close = df["Close"].shift(1)
+    prices, issue = _validated_price_frame(df)
+    if issue:
+        return pd.Series(dtype=float, name="TR")
+    high  = prices["High"]
+    low   = prices["Low"]
+    prev_close = prices["Close"].shift(1)
 
     tr = pd.concat(
         [
@@ -80,6 +141,8 @@ def calc_atr(df: pd.DataFrame, period: int = ATR_PERIOD) -> pd.Series:
     -------
     ATR 시리즈 (이름: "ATR")
     """
+    if isinstance(period, bool) or not isinstance(period, (int, np.integer)) or period < 1:
+        return pd.Series(dtype=float, name="ATR")
     tr  = calc_true_range(df)
     atr = tr.copy().astype(float)
 
@@ -102,6 +165,8 @@ def calc_atr(df: pd.DataFrame, period: int = ATR_PERIOD) -> pd.Series:
     for i in range(init_end, len(tr)):
         atr.iloc[i] = (atr.iloc[i - 1] * (period - 1) + tr.iloc[i]) / period
 
+    if not np.isfinite(atr.iloc[init_end - 1:].to_numpy()).all():
+        return pd.Series(dtype=float, name="ATR")
     atr.name = "ATR"
     return atr
 
@@ -113,7 +178,11 @@ def calc_atr(df: pd.DataFrame, period: int = ATR_PERIOD) -> pd.Series:
 def calc_atr_pct(df: pd.DataFrame, period: int = ATR_PERIOD) -> pd.Series:
     """ATR을 종가로 나눈 백분율 (자산 간 비교용)."""
     atr  = calc_atr(df, period)
-    pct  = (atr / df["Close"]) * 100
+    if not isinstance(df, pd.DataFrame) or not _has_current_atr(atr, df.index):
+        return pd.Series(dtype=float, name="ATR%")
+    pct  = (atr / pd.to_numeric(df["Close"], errors="raise")) * 100
+    if not np.isfinite(pct.iloc[period - 1:].to_numpy()).all():
+        return pd.Series(dtype=float, name="ATR%")
     pct.name = "ATR%"
     return pct
 
@@ -136,12 +205,16 @@ def is_atr_spike(
     history_period: 평균 계산에 사용할 과거 기간 수
     multiplier    : 스파이크 판단 배수 (기본 1.5)
     """
-    valid = atr_series.dropna()
-    if len(valid) < history_period + 1:
+    if len(atr_series) < history_period + 1:
         return False
-
-    current_atr  = valid.iloc[-1]
-    avg_atr      = valid.iloc[-(history_period + 1):-1].mean()
+    try:
+        recent = pd.to_numeric(atr_series.iloc[-(history_period + 1):], errors="raise")
+        if not np.isfinite(recent.to_numpy(dtype=float)).all() or (recent < 0).any():
+            return False
+    except (TypeError, ValueError, OverflowError):
+        return False
+    current_atr  = recent.iloc[-1]
+    avg_atr      = recent.iloc[:-1].mean()
     return current_atr > avg_atr * multiplier
 
 
@@ -205,28 +278,31 @@ def calc_chandelier_stop(
     -------
     ChandelierResult 또는 None (데이터 부족 시)
     """
-    if df.empty or len(df) < max(period, hh_window) + 1:
+    if atr_input_issue(df, period, hh_window):
         return None
 
     atr_series  = calc_atr(df, period)
     atr_pct_ser = calc_atr_pct(df, period)
 
-    valid_atr = atr_series.dropna()
-    if valid_atr.empty:
+    if not _has_current_atr(atr_series, df.index) or not _has_current_atr(atr_pct_ser, df.index):
         return None
 
-    current_atr   = float(valid_atr.iloc[-1])
-    current_pct   = float(atr_pct_ser.dropna().iloc[-1]) if not atr_pct_ser.dropna().empty else 0.0
+    prices, _ = _validated_price_frame(df)
+    current_atr   = float(atr_series.iloc[-1])
+    current_pct   = float(atr_pct_ser.iloc[-1])
     current_close = float(df["Close"].iloc[-1])
-    highest_high  = float(df["High"].iloc[-hh_window:].max())
+    highest_high  = float(prices["High"].iloc[-hh_window:].max())
 
     # 21일 EMA (Stop 이탈 종목의 대체 기준선)
-    ema_21 = float(df["Close"].ewm(span=21, adjust=False).mean().iloc[-1])
+    ema_21 = float(prices["Close"].ewm(span=21, adjust=False).mean().iloc[-1])
 
     # 시장별 + ATR% 구간 보정 배수
     multiple   = get_atr_multiple(symbol, current_pct)
     stop_level = highest_high - current_atr * multiple
     dist_pct   = (current_close - stop_level) / current_close * 100
+    if not all(np.isfinite(value) for value in (current_atr, current_pct, current_close,
+                                               highest_high, ema_21, multiple, stop_level, dist_pct)):
+        return None
 
     from config import get_market_type
     return ChandelierResult(
@@ -398,16 +474,18 @@ def summarize_portfolio_atr(
 
     rows: list[dict] = []
     for symbol, df in ohlcv_map.items():
-        if df.empty or len(df) < period + 1:
+        if atr_input_issue(df, period):
             continue
 
         try:
             atr_series  = calc_atr(df, period)
             atr_pct_ser = calc_atr_pct(df, period)
 
-            latest_close   = df["Close"].iloc[-1]
-            latest_atr     = atr_series.dropna().iloc[-1]  if not atr_series.dropna().empty  else float("nan")
-            latest_atr_pct = atr_pct_ser.dropna().iloc[-1] if not atr_pct_ser.dropna().empty else float("nan")
+            if not _has_current_atr(atr_series, df.index) or not _has_current_atr(atr_pct_ser, df.index):
+                continue
+            latest_close   = float(df["Close"].iloc[-1])
+            latest_atr     = float(atr_series.iloc[-1])
+            latest_atr_pct = float(atr_pct_ser.iloc[-1])
 
             valid_atr  = atr_series.dropna()
             atr_avg20  = valid_atr.iloc[-ATR_HISTORY_PERIOD:].mean() if len(valid_atr) >= ATR_HISTORY_PERIOD else float("nan")
@@ -415,6 +493,8 @@ def summarize_portfolio_atr(
 
             # Chandelier Exit
             chandelier = calc_chandelier_stop(symbol, df, period)
+            if chandelier is None:
+                continue
             multiple    = chandelier.multiple       if chandelier else float("nan")
             hh          = chandelier.highest_high   if chandelier else float("nan")
             stop_level  = chandelier.stop_level     if chandelier else float("nan")
@@ -437,7 +517,7 @@ def summarize_portfolio_atr(
                 }
             )
         except Exception as exc:
-            _logger.warning("ATR 계산 건너뜀 (%s): %s", symbol, exc)
+            _logger.warning("ATR 계산 건너뜀 (%s): %s", symbol, type(exc).__name__)
 
     summary = pd.DataFrame(rows)
     if not summary.empty:

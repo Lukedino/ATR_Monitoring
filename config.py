@@ -147,8 +147,8 @@ def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
     Google Drive에서 포트폴리오 파일을 다운로드하여 파싱합니다.
     Google Sheets / 업로드된 .xlsx / CSV 파일 모두 지원.
     """
-    sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-    file_id = os.getenv("GDRIVE_PORTFOLIO_FILE_ID", "")
+    sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    file_id = os.getenv("GDRIVE_PORTFOLIO_FILE_ID", "").strip()
     if not sa_json or not file_id:
         return None
     try:
@@ -188,8 +188,26 @@ def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
 
     except Exception as exc:
         import logging as _log
-        _log.getLogger("config").warning("Drive 포트폴리오 로드 실패: %s — fallback 사용", exc)
+        _log.getLogger("config").warning("Drive 포트폴리오 로드 실패 (%s)", type(exc).__name__)
         return None
+
+
+def _validated_portfolio(value) -> dict[str, list[str]]:
+    """Validate list shape without coercing invalid entries into ticker strings."""
+    if not isinstance(value, dict) or not value:
+        raise ValueError("portfolio_object_required")
+    result = {}
+    for group, symbols in value.items():
+        if not isinstance(group, str) or not group.strip() or not isinstance(symbols, list):
+            raise ValueError("portfolio_group_invalid")
+        if any(not isinstance(symbol, str) or not symbol.strip()
+               or symbol != symbol.strip() or any(ord(char) < 32 or ord(char) == 127 for char in symbol)
+               for symbol in symbols):
+            raise ValueError("portfolio_symbol_invalid")
+        result[group] = list(symbols)
+    if not any(result.values()):
+        raise ValueError("portfolio_empty")
+    return result
 
 
 def _portfolio_source(drive_portfolio, stock_list_env: str) -> str:
@@ -200,27 +218,57 @@ def _portfolio_source(drive_portfolio, stock_list_env: str) -> str:
     return "stock_list" if stock_list_env else "fallback"
 
 
-_stock_list_env  = os.getenv("STOCK_LIST", "")
-_drive_portfolio = _load_portfolio_from_drive()
+def _unique_portfolio_object(pairs):
+    """Reject duplicate JSON groups instead of silently losing earlier symbols."""
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("portfolio_duplicate_group")
+        value[key] = item
+    return value
 
-# monitor 가 GitHub Actions 에서 확인한다: Drive 를 쓰도록 설정됐는데 다른 출처로 돌고 있으면
-# 실보유 대신 낡은 목록·예시 5종목을 감시하는 것이다.
-DRIVE_PORTFOLIO_CONFIGURED: bool = bool(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")) and bool(os.getenv("GDRIVE_PORTFOLIO_FILE_ID"))
-PORTFOLIO_SOURCE: str = _portfolio_source(_drive_portfolio, _stock_list_env)
 
-if PORTFOLIO_SOURCE == "drive":
-    PORTFOLIO: dict[str, list[str]] = _drive_portfolio
-elif _stock_list_env:
-    try:
-        PORTFOLIO = json.loads(_stock_list_env)
-    except json.JSONDecodeError:
-        import logging as _logging
-        _logging.getLogger("config").warning(
-            "STOCK_LIST 환경변수 JSON 파싱 실패 — fallback 사용"
-        )
-        PORTFOLIO = _PORTFOLIO_FALLBACK
-else:
-    PORTFOLIO = _PORTFOLIO_FALLBACK
+def _select_portfolio(drive_portfolio, stock_list_env, *, drive_requested, has_credentials, in_ci):
+    """Return (validated portfolio, actual source, non-sensitive error code).
+
+    A service account alone can belong to state sync; it does not override a
+    valid legacy STOCK_LIST. An explicit portfolio file ID always selects Drive.
+    Only unconfigured local development keeps the historical demo fallback.
+    """
+    if drive_requested:
+        if not has_credentials:
+            return {}, "invalid", "drive_portfolio_configuration_incomplete"
+        try:
+            return _validated_portfolio(drive_portfolio), "drive", ""
+        except ValueError:
+            return {}, "invalid", "drive_portfolio_unavailable_or_invalid"
+    if stock_list_env:
+        try:
+            parsed = json.loads(stock_list_env, object_pairs_hook=_unique_portfolio_object)
+            return _validated_portfolio(parsed), "stock_list", ""
+        except (ValueError, TypeError, RecursionError):
+            return {}, "invalid", "stock_list_invalid"
+    if has_credentials or in_ci:
+        return {}, "invalid", "portfolio_source_missing"
+    return _validated_portfolio(_PORTFOLIO_FALLBACK), "fallback", ""
+
+
+_stock_list_env = os.getenv("STOCK_LIST", "")
+_has_portfolio_credentials = bool(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip())
+# The credential is shared with state sync. The portfolio ID expresses that
+# Drive is the requested source even when its credential is missing.
+DRIVE_PORTFOLIO_CONFIGURED: bool = bool(os.getenv("GDRIVE_PORTFOLIO_FILE_ID", "").strip())
+_drive_portfolio = _load_portfolio_from_drive() if DRIVE_PORTFOLIO_CONFIGURED and _has_portfolio_credentials else None
+PORTFOLIO, PORTFOLIO_SOURCE, PORTFOLIO_ERROR = _select_portfolio(
+    _drive_portfolio, _stock_list_env,
+    drive_requested=DRIVE_PORTFOLIO_CONFIGURED,
+    has_credentials=_has_portfolio_credentials,
+    in_ci=os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true",
+)
+if PORTFOLIO_SOURCE != "drive":
+    _kr_names_from_drive.clear()
+    _symbol_accounts.clear()
+    _symbol_entry_prices.clear()
 
 # 모든 심볼을 플랫 리스트로
 ALL_SYMBOLS: list[str] = list(dict.fromkeys(s for symbols in PORTFOLIO.values() for s in symbols))

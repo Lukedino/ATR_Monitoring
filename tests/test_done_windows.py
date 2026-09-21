@@ -82,13 +82,15 @@ def test_old_dates_are_pruned(isolated_state):
 def test_other_state_sections_are_preserved(isolated_state):
     """positions·alert_log 를 덮어쓰면 포지션과 알림 중복방지가 통째로 날아간다."""
     raw = json.loads(isolated_state.read_text(encoding="utf-8"))
-    raw["positions"] = {"AAPL": {"symbol": "AAPL"}}
-    raw["alert_log"] = {"AAPL": {"date": "2026-09-14"}}
+    position = {"symbol": "SYM-0001", "entry_price": 100.0,
+                "current_stop": 90.0, "highest_high": 110.0}
+    raw["positions"] = {"SYM-0001": position}
+    raw["alert_log"] = {"SYM-0001": {"date": "2026-09-14"}}
     isolated_state.write_text(json.dumps(raw), encoding="utf-8")
 
     sm.mark_window_done("kr_open", D1)
 
     after = json.loads(isolated_state.read_text(encoding="utf-8"))
-    assert after["positions"] == {"AAPL": {"symbol": "AAPL"}}
-    assert after["alert_log"] == {"AAPL": {"date": "2026-09-14"}}
+    assert after["positions"] == {"SYM-0001": position}
+    assert after["alert_log"] == {"SYM-0001": {"date": "2026-09-14"}}
     assert after["done_windows"][D1.isoformat()] == ["kr_open"]

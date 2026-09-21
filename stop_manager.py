@@ -17,12 +17,16 @@ ATR Trailing Stop 영속성 관리 모듈
 """
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from state_validation import (
+    StateValidationError, read_state, state_locked, validate_number,
+    validate_string_list, write_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,35 +81,36 @@ def _now() -> str:
 # JSON 읽기/쓰기
 # ─────────────────────────────────────────────────────────────
 
+@state_locked
 def _load_raw() -> dict:
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if not DATA_FILE.exists():
-        return {"positions": {}}
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return read_state(DATA_FILE, missing_ok=True)
 
 
+@state_locked
 def _save_raw(raw: dict) -> None:
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(raw, f, ensure_ascii=False, indent=2)
+    # A malformed existing file needs explicit recovery, never silent reset.
+    read_state(DATA_FILE, missing_ok=True)
+    write_state(DATA_FILE, raw)
 
 
+@state_locked
 def load_all() -> dict[str, StopRecord]:
     """저장된 모든 포지션을 {symbol: StopRecord} 형태로 반환합니다."""
     raw = _load_raw()
     result: dict[str, StopRecord] = {}
     for sym, rec in raw.get("positions", {}).items():
-        try:
-            result[sym] = StopRecord.from_dict(rec)
-        except (KeyError, TypeError) as e:
-            logger.warning("레코드 파싱 실패 (%s): %s", sym, e)
+        result[sym] = StopRecord.from_dict(rec)
     return result
 
 
+@state_locked
 def save_all(records: dict[str, StopRecord]) -> None:
     """모든 포지션을 JSON에 저장합니다."""
     raw = _load_raw()
-    raw["positions"] = {sym: rec.to_dict() for sym, rec in records.items()}
+    previous = raw.get("positions", {})
+    raw["positions"] = {
+        sym: {**previous.get(sym, {}), **rec.to_dict()} for sym, rec in records.items()
+    }
     _save_raw(raw)
     logger.debug("stop_levels.json 저장 완료 (%d개)", len(records))
 
@@ -114,6 +119,7 @@ def save_all(records: dict[str, StopRecord]) -> None:
 # 포지션 CRUD
 # ─────────────────────────────────────────────────────────────
 
+@state_locked
 def add_position(
     symbol:        str,
     entry_price:   float,
@@ -148,6 +154,7 @@ def get_position(symbol: str) -> Optional[StopRecord]:
     return load_all().get(symbol)
 
 
+@state_locked
 def remove_position(symbol: str) -> bool:
     """포지션 제거. 성공 시 True 반환."""
     records = load_all()
@@ -181,6 +188,7 @@ class UpdateResult:
         return round((self.new_stop - self.prev_stop) / self.prev_stop * 100, 2)
 
 
+@state_locked
 def update_stop(
     symbol:        str,
     new_stop:      float,
@@ -208,6 +216,10 @@ def update_stop(
     -------
     UpdateResult
     """
+    validate_number(new_stop)
+    validate_number(current_close)
+    if new_hh is not None:
+        validate_number(new_hh)
     records = load_all()
     rec     = records.get(symbol)
 
@@ -252,12 +264,15 @@ def update_stop(
         )
 
 
+@state_locked
 def trigger_breakeven(symbol: str, entry_price: float | None = None) -> bool:
     """
     1차 목표 달성 시 Stop을 진입가(Breakeven)로 상향합니다.
 
     이미 Breakeven 상태이거나 포지션이 없으면 False 반환.
     """
+    if entry_price is not None:
+        validate_number(entry_price)
     records = load_all()
     rec     = records.get(symbol)
 
@@ -283,6 +298,7 @@ def trigger_breakeven(symbol: str, entry_price: float | None = None) -> bool:
     return True
 
 
+@state_locked
 def advance_stage(symbol: str) -> int:
     """2차 목표 달성 시 stage를 2로 진행합니다. 현재 stage 반환."""
     records = load_all()
@@ -321,12 +337,14 @@ def advance_stage(symbol: str) -> int:
 #   시장 활성 여부 게이트는 monitor.py 의 _is_market_active_for_triggers() 가 담당
 # ─────────────────────────────────────────────────────────────
 
+@state_locked
 def _load_alert_log() -> dict:
     """alert_log 섹션 로드."""
     raw = _load_raw()
     return raw.get("alert_log", {})
 
 
+@state_locked
 def _save_alert_log(log: dict) -> None:
     """alert_log 섹션 저장."""
     raw = _load_raw()
@@ -334,6 +352,7 @@ def _save_alert_log(log: dict) -> None:
     _save_raw(raw)
 
 
+@state_locked
 def should_send_trigger_alert(
     symbol:      str,
     new_triggers: list[str],
@@ -351,6 +370,10 @@ def should_send_trigger_alert(
     True  → 발송 필요
     False → 동일 조건 발송됨 (스킵)
     """
+    validate_string_list(new_triggers)
+    validate_number(new_close)
+    if new_stop is not None:
+        validate_number(new_stop)
     log   = _load_alert_log()
     today = datetime.now().strftime("%Y-%m-%d")
     entry = log.get(symbol)
@@ -393,6 +416,7 @@ def should_send_trigger_alert(
     return False
 
 
+@state_locked
 def mark_trigger_sent(
     symbol:      str,
     triggers:    list[str],
@@ -451,12 +475,14 @@ def summary_text() -> str:
 DONE_WINDOW_RETENTION_DAYS = 7
 
 
+@state_locked
 def is_window_done(window_name: str, local_date) -> bool:
     """해당 창을 그 지역 날짜에 이미 실행했는지."""
     raw = _load_raw()
     return window_name in raw.get("done_windows", {}).get(local_date.isoformat(), [])
 
 
+@state_locked
 def mark_window_done(window_name: str, local_date) -> None:
     """창 실행 완료를 기록하고 오래된 날짜를 정리한다."""
     raw  = _load_raw()

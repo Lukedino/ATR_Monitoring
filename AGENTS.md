@@ -1,5 +1,7 @@
 > 이 문서는 Codex 등 외부 에이전트용 안내문이다. 2026-09-18 작성.
 
+> 2026-09-22 구현 반영: ATR 계산은 H/L/C 이력과 최신 ATR의 유효성을 확인한다(Open이 없는 부분 봉은 허용). 로컬 상태는 `state_validation.py`에서 스키마를 검사하고 원자적으로 저장하며, 같은 프로세스의 갱신은 RLock으로 직렬화한다. 명시한 포트폴리오 설정이 잘못되면 예시 목록으로 전환하지 않고 실행을 중단한다. 아래 리뷰 당시 기록보다 이 안내와 `docs/input-state-hardening.md`의 현재 계약을 우선한다. 실제 입력·자격증명·운영 데이터에 대한 5절의 보호 규칙은 유지한다.
+
 > 2026-09-20: 아래 7절의 "알림 누락 경로"·"조용한 fallback" 중 다수가 수정됐다 — 종목별 예외 격리, 전송 성공 후에만 기록, Stop 은 알림 전송 뒤 저장(`update_stop(commit=False)`), 수집률 80% 미만·포트폴리오 출처 이상은 실패 처리, `send_message` 재시도, 문제가 있던 실행은 종료코드 1. 상세는 `DEVLOG.md` 2026-09-20 절, 회귀 테스트는 `tests/test_silent_failures.py`.
 
 # AGENTS.md — Portfolio ATR Monitor (읽기 전용 리뷰 안내)
@@ -15,7 +17,8 @@
 | `stop_manager.py` | 상태 파일 읽기/쓰기 — `positions`·`alert_log`(알림 중복 방지)·`done_windows`(창 멱등) |
 | `drive_state.py` | 상태 파일 Drive 동기화(pull/push, 검증, md5 확인, fail-closed) |
 | `log_masking.py` | 공개 로그 마스킹 2겹(로깅 필터 + GHA `::add-mask::`) |
-| `config.py` | 환경변수·포트폴리오 로드(Drive → `STOCK_LIST` → 로컬 fallback)·ATR 파라미터. **import 시점에 Drive 를 호출**한다 |
+| `config.py` | 환경변수·포트폴리오 로드(명시한 Drive 또는 `STOCK_LIST`, 무설정 로컬만 fallback)·ATR 파라미터. **import 시점에 Drive 를 호출할 수 있다** |
+| `state_validation.py` | 상태 스키마·정제된 오류·원자적 로컬 쓰기·프로세스 내 공통 잠금 |
 | `data_collector.py` | OHLCV 수집·최신가 동기화·심볼 교정(접미사 뒤집기, 크립토 숫자 ID 변종) |
 | `atr_calculator.py` / `visualizer.py` / `telegram_bot.py` | ATR·Chandelier·트리거 계산 / 차트 PNG / 전송·메시지 포맷 |
 | `dispatcher_schedules.py` → `dispatcher_schedules.json` | 창 정의에서 외부 디스패처용 슬롯(UTC cron) 목록을 생성한 산출물 |

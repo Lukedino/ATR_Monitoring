@@ -29,6 +29,11 @@ import logging
 import os
 from pathlib import Path
 
+from state_validation import (
+    StateValidationError, atomic_write_state_bytes, state_locked,
+    validate_state_bytes as _validate_state_bytes,
+)
+
 logger = logging.getLogger(__name__)
 
 STATE_FILE_ID_ENV = "GDRIVE_STATE_FILE_ID"
@@ -42,15 +47,10 @@ class StateSyncError(RuntimeError):
 
 def validate_state_bytes(raw: bytes) -> dict:
     """상태 파일 바이트가 정상인지 검사하고 dict 로 돌려준다. 순수 함수."""
-    if not raw or not raw.strip():
-        raise StateSyncError("Drive 상태 파일이 비어 있음 — 최초 1회 시드(현재 stop_levels.json 업로드)가 필요")
     try:
-        data = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as e:
-        raise StateSyncError(f"상태 파일 JSON 파싱 실패: {e}") from e
-    if not isinstance(data, dict) or not any(k in data for k in REQUIRED_KEYS):
-        raise StateSyncError("상태 파일 형식 아님 (positions/alert_log 키 없음)")
-    return data
+        return _validate_state_bytes(raw)
+    except StateValidationError as error:
+        raise StateSyncError(str(error)) from None
 
 
 def _md5(b: bytes) -> str:
@@ -73,20 +73,27 @@ class DriveState:
         self.service     = service
         self._pulled_md5: str | None = None
 
+    @state_locked
     def pull(self) -> dict:
         raw  = self.service.files().get_media(fileId=self.file_id).execute()
         data = validate_state_bytes(raw)              # 실패 시 로컬 파일은 건드리지 않는다
-        self.local_path.parent.mkdir(parents=True, exist_ok=True)
-        self.local_path.write_bytes(raw)
+        try:
+            atomic_write_state_bytes(self.local_path, raw)
+        except StateValidationError as error:
+            raise StateSyncError(str(error)) from None
         self._pulled_md5 = _md5(raw)
         logger.info("Drive 상태 파일 로드 — %d bytes, alert_log %d건", len(raw), len(data.get("alert_log", {})))
         return data
 
+    @state_locked
     def push(self) -> bool:
         """로컬이 바뀌었으면 Drive 에 올린다. 올렸으면 True."""
         if not self.local_path.exists():
             return False
-        raw = self.local_path.read_bytes()
+        try:
+            raw = self.local_path.read_bytes()
+        except OSError:
+            raise StateSyncError("Local state file could not be read") from None
         if _md5(raw) == self._pulled_md5:
             return False
         validate_state_bytes(raw)                     # 깨진 로컬로 Drive 의 멀쩡한 상태를 덮어쓰지 않는다
