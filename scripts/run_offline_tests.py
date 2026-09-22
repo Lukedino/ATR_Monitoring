@@ -172,6 +172,12 @@ def main(argv=None):
     if selection == ["--self-check"]:
         return self_check(guard, outer, sandbox)
 
+    if os.name != "nt":
+        # openpyxl의 MIME 초기화가 호스트 설정 파일을 읽지 않도록 내장 표만 사용한다.
+        import mimetypes
+        mimetypes.knownfiles = []
+        mimetypes.init(files=[])
+
     import dotenv
     dotenv.load_dotenv = lambda *args, **kwargs: False
     dotenv.main.load_dotenv = dotenv.load_dotenv
