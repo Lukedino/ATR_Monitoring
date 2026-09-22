@@ -12,7 +12,8 @@ drive_state.py — 봇 상태 파일(data/stop_levels.json)을 Google Drive 에 
     빈 기억으로 실행하면 모든 종목에 알림을 다시 보내는 스팸이 되므로 fail-closed.
   - 종료: 로컬이 바뀌었을 때만 Drive update(push). 서비스계정은 새 파일을 만들 수 없어(저장 쿼터 0,
     Pactolus/크롤러에서 검증된 제약) 사용자가 만든 placeholder 파일을 갱신한다. Drive 가 돌려준
-    md5 로 업로드를 검증.
+    md5 로 업로드를 검증. 변경분 업로드 전 원격 md5 와 검증한 pull 기준값을 비교한다.
+    이 사전 검사는 원자적 조건부 갱신이 아니므로 검사와 쓰기 사이의 경쟁까지 막지는 않는다.
   - GitHub Actions(GITHUB_ACTIONS=true)에서 GDRIVE_STATE_FILE_ID 가 없으면 StateSyncError —
     파일이 더 이상 repo 에 없으므로 그대로 돌면 빈 기억이 된다. 로컬 개발은 미설정 시 로컬 파일만 사용.
 
@@ -28,7 +29,9 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 
+from state_lock import StateLockError
 from state_validation import (
     StateValidationError, atomic_write_state_bytes, state_locked,
     validate_state_bytes as _validate_state_bytes,
@@ -84,8 +87,17 @@ class DriveState:
         self.service     = service
         self._pulled_md5: str | None = None
 
-    @state_locked
     def pull(self) -> dict:
+        try:
+            return self._pull_locked()
+        except StateLockError:
+            self._pulled_md5 = None
+            raise StateSyncError("Drive state download failed at the local state lock") from None
+
+    @state_locked(lambda self: self.local_path)
+    def _pull_locked(self) -> dict:
+        # A failed refresh must not leave an older download authorizing writes.
+        self._pulled_md5 = None
         try:
             raw = self.service.files().get_media(fileId=self.file_id).execute()
         except Exception:
@@ -100,12 +112,24 @@ class DriveState:
         logger.info("Drive 상태 파일 로드 — %d bytes, alert_log %d건", len(raw), len(data.get("alert_log", {})))
         return data
 
-    @state_locked
     def push(self) -> bool:
-        """로컬이 바뀌었으면 Drive 에 올린다. 올렸으면 True."""
-        if not self.local_path.exists():
-            return False
+        """검증한 pull 이후 변경분만 사전 충돌 검사 후 올린다. 올렸으면 True.
+
+        The metadata check detects changes already visible before the upload;
+        it is not an atomic compare-and-swap. A concurrent writer between this
+        check and update, or content changed and restored (ABA), can be missed.
+        """
         try:
+            return self._push_locked()
+        except StateLockError:
+            self._pulled_md5 = None
+            raise StateSyncError("Drive state upload failed at the local state lock") from None
+
+    @state_locked(lambda self: self.local_path)
+    def _push_locked(self) -> bool:
+        try:
+            if not self.local_path.exists():
+                return False
             raw = self.local_path.read_bytes()
         except OSError:
             raise StateSyncError("Local state file could not be read") from None
@@ -113,19 +137,34 @@ class DriveState:
         if local_md5 == self._pulled_md5:
             return False
         validate_state_bytes(raw)                     # 깨진 로컬로 Drive 의 멀쩡한 상태를 덮어쓰지 않는다
+        if self._pulled_md5 is None:
+            raise StateSyncError("Drive state upload requires a successful pull")
         try:
             from googleapiclient.http import MediaIoBaseUpload
             media = MediaIoBaseUpload(io.BytesIO(raw), mimetype="application/json", resumable=False)
         except Exception:
             raise StateSyncError("Drive upload preparation failed") from None
         try:
+            remote = self.service.files().get(
+                fileId=self.file_id, fields="md5Checksum",
+            ).execute()
+        except Exception:
+            raise StateSyncError("Drive state preflight check failed; upload was not attempted") from None
+        remote_md5 = remote.get("md5Checksum") if isinstance(remote, dict) else None
+        if not isinstance(remote_md5, str) or re.fullmatch(r"[0-9a-fA-F]{32}", remote_md5) is None:
+            raise StateSyncError("Drive state preflight checksum is invalid; upload was not attempted")
+        if remote_md5.lower() != self._pulled_md5:
+            raise StateSyncError("Drive state changed remotely; upload was not attempted")
+        try:
             # One attempt only: a timeout may occur after the server committed.
-            # Do not retry an uncertain write or advance the acknowledged MD5.
+            # An uncertain write revokes the baseline until a new pull succeeds.
             resp = self.service.files().update(fileId=self.file_id, media_body=media,
                                                fields="id,size,md5Checksum").execute()
         except Exception:
+            self._pulled_md5 = None
             raise StateSyncError("Drive state upload failed; remote result is unconfirmed") from None
         if not isinstance(resp, dict) or resp.get("md5Checksum") != local_md5:
+            self._pulled_md5 = None
             raise StateSyncError("Drive upload verification failed; remote result is unconfirmed")
         self._pulled_md5 = local_md5
         logger.info("Drive 상태 파일 갱신 — %d bytes", len(raw))

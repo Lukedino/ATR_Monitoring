@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 DATA_FILE = Path(__file__).parent / "data" / "stop_levels.json"
 
 
+def _state_path(*args, **kwargs):
+    """Resolve the current state path when a public operation starts."""
+    return DATA_FILE
+
+
 # ─────────────────────────────────────────────────────────────
 # 데이터 모델
 # ─────────────────────────────────────────────────────────────
@@ -82,19 +87,19 @@ def _now() -> str:
 # JSON 읽기/쓰기
 # ─────────────────────────────────────────────────────────────
 
-@state_locked
+@state_locked(_state_path)
 def _load_raw() -> dict:
     return read_state(DATA_FILE, missing_ok=True)
 
 
-@state_locked
+@state_locked(_state_path)
 def _save_raw(raw: dict) -> None:
     # A malformed existing file needs explicit recovery, never silent reset.
     read_state(DATA_FILE, missing_ok=True)
     write_state(DATA_FILE, raw)
 
 
-@state_locked
+@state_locked(_state_path)
 def load_all() -> dict[str, StopRecord]:
     """저장된 모든 포지션을 {symbol: StopRecord} 형태로 반환합니다."""
     raw = _load_raw()
@@ -104,7 +109,7 @@ def load_all() -> dict[str, StopRecord]:
     return result
 
 
-@state_locked
+@state_locked(_state_path)
 def save_all(records: dict[str, StopRecord]) -> None:
     """모든 포지션을 JSON에 저장합니다."""
     raw = _load_raw()
@@ -120,7 +125,7 @@ def save_all(records: dict[str, StopRecord]) -> None:
 # 포지션 CRUD
 # ─────────────────────────────────────────────────────────────
 
-@state_locked
+@state_locked(_state_path)
 def add_position(
     symbol:        str,
     entry_price:   float,
@@ -155,7 +160,7 @@ def get_position(symbol: str) -> Optional[StopRecord]:
     return load_all().get(symbol)
 
 
-@state_locked
+@state_locked(_state_path)
 def remove_position(symbol: str) -> bool:
     """포지션 제거. 성공 시 True 반환."""
     records = load_all()
@@ -189,7 +194,7 @@ class UpdateResult:
         return round((self.new_stop - self.prev_stop) / self.prev_stop * 100, 2)
 
 
-@state_locked
+@state_locked(_state_path)
 def update_stop(
     symbol:        str,
     new_stop:      float,
@@ -265,7 +270,7 @@ def update_stop(
         )
 
 
-@state_locked
+@state_locked(_state_path)
 def trigger_breakeven(symbol: str, entry_price: float | None = None) -> bool:
     """
     1차 목표 달성 시 Stop을 진입가(Breakeven)로 상향합니다.
@@ -299,7 +304,7 @@ def trigger_breakeven(symbol: str, entry_price: float | None = None) -> bool:
     return True
 
 
-@state_locked
+@state_locked(_state_path)
 def advance_stage(symbol: str) -> int:
     """2차 목표 달성 시 stage를 2로 진행합니다. 현재 stage 반환."""
     records = load_all()
@@ -341,14 +346,14 @@ def advance_stage(symbol: str) -> int:
 _ALERT_DATE_BASIS = "market-v1"
 
 
-@state_locked
+@state_locked(_state_path)
 def _load_alert_log() -> dict:
     """alert_log 섹션 로드."""
     raw = _load_raw()
     return raw.get("alert_log", {})
 
 
-@state_locked
+@state_locked(_state_path)
 def _save_alert_log(log: dict) -> None:
     """alert_log 섹션 저장."""
     raw = _load_raw()
@@ -356,7 +361,7 @@ def _save_alert_log(log: dict) -> None:
     _save_raw(raw)
 
 
-@state_locked
+@state_locked(_state_path)
 def should_send_trigger_alert(
     symbol:      str,
     new_triggers: list[str],
@@ -429,7 +434,7 @@ def should_send_trigger_alert(
     return False
 
 
-@state_locked
+@state_locked(_state_path)
 def mark_trigger_sent(
     symbol:      str,
     triggers:    list[str],
@@ -494,14 +499,14 @@ def summary_text() -> str:
 DONE_WINDOW_RETENTION_DAYS = 7
 
 
-@state_locked
+@state_locked(_state_path)
 def is_window_done(window_name: str, local_date) -> bool:
     """해당 창을 그 지역 날짜에 이미 실행했는지."""
     raw = _load_raw()
     return window_name in raw.get("done_windows", {}).get(local_date.isoformat(), [])
 
 
-@state_locked
+@state_locked(_state_path)
 def mark_window_done(window_name: str, local_date) -> None:
     """창 실행 완료를 기록하고 오래된 날짜를 정리한다."""
     raw  = _load_raw()

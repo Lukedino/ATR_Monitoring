@@ -1,4 +1,4 @@
-"""Private state validation and atomic local storage (one Python process).
+"""Private state validation and atomic storage within path-scoped transactions.
 
 Unknown JSON fields are preserved for forward compatibility. Existing position
 records require the fields StopRecord consumes; older optional stage/timestamp
@@ -14,23 +14,27 @@ import math
 import os
 from pathlib import Path
 import tempfile
-import threading
+
+from state_lock import state_transaction
 
 
 class StateValidationError(RuntimeError):
     """Invalid or unreadable state; callers must stop rather than use empty state."""
 
 
-STATE_LOCK = threading.RLock()
+def state_locked(path_resolver):
+    """Lock the call's current state path for its complete operation.
 
-
-def state_locked(function):
-    """Serialize a complete local read/modify/write, including nested helpers."""
-    @wraps(function)
-    def locked(*args, **kwargs):
-        with STATE_LOCK:
-            return function(*args, **kwargs)
-    return locked
+    Resolve at invocation so instance paths and redirected test paths share the
+    same reentrant transaction as nested readers, writers and complete jobs.
+    """
+    def decorate(function):
+        @wraps(function)
+        def locked(*args, **kwargs):
+            with state_transaction(path_resolver(*args, **kwargs)):
+                return function(*args, **kwargs)
+        return locked
+    return decorate
 
 
 def validate_number(value):
@@ -157,7 +161,7 @@ def validate_state_bytes(raw: bytes) -> dict:
         raise StateValidationError("State JSON or schema is invalid") from None
 
 
-@state_locked
+@state_locked(lambda path, **kwargs: path)
 def read_state(path: Path, *, missing_ok=False) -> dict:
     try:
         raw = Path(path).read_bytes()
@@ -170,7 +174,7 @@ def read_state(path: Path, *, missing_ok=False) -> dict:
     return validate_state_bytes(raw)
 
 
-@state_locked
+@state_locked(lambda path, raw: path)
 def atomic_write_state_bytes(path: Path, raw: bytes) -> dict:
     """Stage, fsync and revalidate before atomic replacement of the local file."""
     data = validate_state_bytes(raw)
@@ -200,7 +204,7 @@ def atomic_write_state_bytes(path: Path, raw: bytes) -> dict:
     return data
 
 
-@state_locked
+@state_locked(lambda path, data: path)
 def write_state(path: Path, data: dict) -> None:
     validate_state(data)
     try:

@@ -117,11 +117,12 @@ def test_existing_broken_state_is_never_returned_as_empty_or_overwritten(local_s
         assert local_state.read_bytes() == raw
 
 
-def test_missing_local_state_remains_supported_without_creating_a_file(tmp_path, monkeypatch):
+def test_missing_local_state_creates_only_the_permanent_lock_sidecar(tmp_path, monkeypatch):
     path = tmp_path / "new-folder" / "state.json"
     monkeypatch.setattr(sm, "DATA_FILE", path)
     assert sm.load_all() == {}
-    assert not path.parent.exists()
+    assert not path.exists()
+    assert set(path.parent.iterdir()) == {path.with_name(path.name + ".lock")}
     sm.add_position(SYMBOL, 100, 90)
     assert sm.load_all()[SYMBOL].current_stop == 90
 
@@ -171,7 +172,9 @@ def test_atomic_save_failure_preserves_original_and_removes_temp(local_state, mo
     with pytest.raises(sv.StateValidationError):
         sm.add_position("SYM-0002", 110, 95)
     assert local_state.read_bytes() == before
-    assert list(local_state.parent.iterdir()) == [local_state]
+    assert set(local_state.parent.iterdir()) == {
+        local_state, local_state.with_name(local_state.name + ".lock"),
+    }
 
 
 def test_atomic_save_checks_exact_staged_bytes_even_if_json_is_valid(local_state, monkeypatch):

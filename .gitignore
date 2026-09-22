@@ -18,6 +18,7 @@ env/
 # ─── 민감 데이터 ──────────────────────────────────────────────
 # stop_levels.json(alert_log = 실제 보유 종목 이력)은 2026-08-30부터 Google Drive 에 보관 — 절대 커밋 금지
 data/stop_levels.json
+data/stop_levels.json.lock
 
 # ─── 차트 임시파일 ────────────────────────────────────────────
 charts/

@@ -130,7 +130,7 @@ class MockFiles:
         self.raw = OLD
         self.phase = None
         self.error = None
-        self.calls = {"get_media": 0, "update": 0, "execute": 0}
+        self.calls = {"get_media": 0, "get": 0, "update": 0, "execute": 0}
         self.uploaded = None
         self.response = None
 
@@ -145,6 +145,11 @@ class MockFiles:
         if self.phase == "execute":
             raise self.error
         return self.raw
+
+    def get(self, *, fileId, fields):
+        self.calls["get"] += 1
+        assert fields == "md5Checksum"
+        return SimpleNamespace(execute=lambda: {"md5Checksum": hashlib.md5(self.raw).hexdigest()})
 
     def update(self, *, fileId, media_body, fields):
         self.calls["update"] += 1
@@ -173,16 +178,15 @@ def client(tmp_path):
 
 @pytest.mark.parametrize("phase", ["files", "request", "execute"])
 @pytest.mark.parametrize("kind", ["authentication", "http", "transport", "unexpected"])
-def test_pull_errors_preserve_local_state_and_checksum(client, monkeypatch, caplog, capsys, phase, kind):
+def test_pull_errors_preserve_local_state_and_invalidate_checksum(client, monkeypatch, caplog, capsys, phase, kind):
     instance, files, service = client
-    previous_md5 = instance._pulled_md5
     files.phase, files.error = phase, external_error(kind)
     if phase == "files":
         monkeypatch.setattr(service, "files", failing(files.error))
     with pytest.raises(ds.StateSyncError, match="download failed") as caught:
         instance.pull()
     assert instance.local_path.read_bytes() == OLD
-    assert instance._pulled_md5 == previous_md5
+    assert instance._pulled_md5 is None
     assert files.calls["get_media"] <= 1
     assert files.calls["execute"] <= 1
     assert_sanitized(caught.value, caplog, capsys)
@@ -193,14 +197,21 @@ def test_pull_errors_preserve_local_state_and_checksum(client, monkeypatch, capl
 def test_push_errors_are_not_retried_or_acknowledged(client, monkeypatch, caplog, capsys, phase, kind):
     instance, files, service = client
     instance.local_path.write_bytes(NEW)
-    previous_md5 = instance._pulled_md5
     files.phase, files.error = phase, external_error(kind)
     if phase == "files":
-        monkeypatch.setattr(service, "files", failing(files.error))
+        service_calls = []
+
+        def files_for_preflight_then_fail_upload():
+            service_calls.append(True)
+            if len(service_calls) > 1:
+                raise files.error
+            return files
+
+        monkeypatch.setattr(service, "files", files_for_preflight_then_fail_upload)
     with pytest.raises(ds.StateSyncError, match="remote result is unconfirmed") as caught:
         instance.push()
     assert instance.local_path.read_bytes() == NEW
-    assert instance._pulled_md5 == previous_md5
+    assert instance._pulled_md5 is None
     assert files.calls["update"] <= 1
     assert files.calls["execute"] <= 1
     assert_sanitized(caught.value, caplog, capsys)
@@ -235,12 +246,11 @@ def test_push_preparation_errors_are_sanitized_before_any_remote_update(client, 
 def test_unverifiable_upload_does_not_advance_checksum(client, caplog, capsys, response):
     instance, files, _ = client
     instance.local_path.write_bytes(NEW)
-    previous_md5 = instance._pulled_md5
     files.response = response
     with pytest.raises(ds.StateSyncError, match="verification failed") as caught:
         instance.push()
     assert instance.local_path.read_bytes() == NEW
-    assert instance._pulled_md5 == previous_md5
+    assert instance._pulled_md5 is None
     assert files.calls["update"] == files.calls["execute"] == 1
     assert_sanitized(caught.value, caplog, capsys)
 
@@ -250,7 +260,6 @@ def test_sdk_transport_timeout_uses_one_attempt_even_if_server_may_have_committe
     from googleapiclient.http import HttpRequest
     instance, files, _ = client
     instance.local_path.write_bytes(NEW)
-    previous_md5 = instance._pulled_md5
     requests = []
 
     def request(*args, **kwargs):
@@ -264,7 +273,7 @@ def test_sdk_transport_timeout_uses_one_attempt_even_if_server_may_have_committe
         instance.push()
     assert requests == [True]
     assert instance.local_path.read_bytes() == NEW
-    assert instance._pulled_md5 == previous_md5
+    assert instance._pulled_md5 is None
     assert_sanitized(caught.value, caplog, capsys)
 
 

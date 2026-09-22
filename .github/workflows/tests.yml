@@ -40,3 +40,24 @@ jobs:
         run: |
           python scripts/run_offline_tests.py --self-check
           python scripts/run_offline_tests.py
+
+  state-lock-processes:
+    name: State locks (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.12']
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Verify real process locks in guarded synthetic workers
+        run: python -I -S -B -X utf8 scripts/run_state_lock_tests.py

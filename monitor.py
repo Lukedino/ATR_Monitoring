@@ -62,7 +62,8 @@ from atr_calculator import (
 )
 from visualizer import plot_portfolio_atr_bar, plot_atr_chart
 import drive_state
-from state_validation import StateValidationError
+from state_validation import StateValidationError, state_locked
+from state_lock import StateLockError, state_transaction
 from stop_manager import (
     DATA_FILE as STATE_FILE,
     load_all as load_stops,
@@ -166,6 +167,11 @@ def _send_chart_quietly(symbol, df, stop, caption: str) -> None:
         logger.warning("차트 전송 실패 — 텍스트 알림은 이미 나갔다: %s (%s)", symbol, type(exc).__name__)
 
 
+def _state_path(*args, **kwargs):
+    return STATE_FILE
+
+
+@state_locked(_state_path)
 def job_stop_check(symbols: list[str] | None = None) -> None:
     """
     [30분 주기] Chandelier Stop 갱신 체크.
@@ -285,6 +291,7 @@ def _get_data_date(ohlcv_map: dict) -> str:
     return most_common.strftime("%Y-%m-%d")
 
 
+@state_locked(_state_path)
 def _run_daily_report(symbols: list[str], title: str) -> None:
     """
     시장별 일일 ATR 리포트 공통 로직.
@@ -372,6 +379,7 @@ def job_us_daily_report() -> None:
     )
 
 
+@state_locked(_state_path)
 def job_trigger_check() -> None:
     """[수시] 즉각 대응 트리거 빠른 체크 (Stop 갱신 없음)."""
     logger.info("트리거 체크 시작")
@@ -488,6 +496,7 @@ def _run_window_extra(window, result) -> None:
         _send_daily_brief(window, result)
 
 
+@state_locked(_state_path)
 def run_due_windows(now_utc=None) -> None:
     """전 종목 stop_check 을 항상 돌리고, 해당 창이 있으면 그 위에 얹는 것만 추가한다.
 
@@ -561,32 +570,40 @@ def run_github_actions_mode() -> None:
             tg.send_message(f"⚠️ ATR 모니터 중단 — {problem}", parse_mode="")
             sys.exit(1)
 
-    # 2026-08-30: 상태 파일(stop_levels.json)은 repo 커밋 대신 Drive 에 보관 — 시작 시 pull, 종료 시 push.
-    # pull 실패 = 빈 기억으로 돌면 전 종목 알림 스팸이 되므로 실행을 중단하고 Telegram 으로 알린다.
+    # A single local transaction covers download, decisions, notifications and
+    # upload. Locking each file operation separately would still lose updates.
     try:
-        state = drive_state.from_env(STATE_FILE)
-        if state is not None:
-            loaded_state = state.pull()
-            log_masking.register_state_symbols_for_github_actions(loaded_state, KR_STOCK_NAMES)
-    except drive_state.StateSyncError as e:
-        logger.error("상태 파일 로드 실패: %s", e)
-        tg.send_message(f"⚠️ ATR 모니터 중단 — 상태 파일 로드 실패: {e}")
-        sys.exit(1)
-
-    try:
-        fn()
-    except StateValidationError as error:
-        _note_problem("상태 검증 실패: " + str(error))
-    except Exception as error:
-        # Third-party exceptions can contain private state or credential URLs.
-        _note_problem("작업 실행 실패: " + type(error).__name__)
-    finally:
-        # 작업이 도중에 실패해도 그때까지 보낸 알림 이력은 저장한다 (중복 알림 방지)
-        if state is not None:
+        with state_transaction(STATE_FILE):
+            # pull 실패 시 빈 상태로 실행하지 않으며 push도 시도하지 않는다.
             try:
-                state.push()
+                state = drive_state.from_env(STATE_FILE)
+                if state is not None:
+                    loaded_state = state.pull()
+                    log_masking.register_state_symbols_for_github_actions(loaded_state, KR_STOCK_NAMES)
             except drive_state.StateSyncError as e:
-                _note_problem("상태 파일 저장 실패 — 원격 반영 미확정: " + str(e))
+                logger.error("상태 파일 로드 실패: %s", e)
+                tg.send_message(f"⚠️ ATR 모니터 중단 — 상태 파일 로드 실패: {e}")
+                sys.exit(1)
+
+            try:
+                fn()
+            except StateValidationError as error:
+                _note_problem("상태 검증 실패: " + str(error))
+            except Exception as error:
+                # Third-party exceptions can contain private state or credential URLs.
+                _note_problem("작업 실행 실패: " + type(error).__name__)
+            finally:
+                # 작업이 실패해도 그때까지 성공한 알림 이력은 같은 잠금 안에서 저장한다.
+                if state is not None:
+                    try:
+                        state.push()
+                    except drive_state.StateSyncError as e:
+                        _note_problem("상태 파일 저장 실패 — 원격 반영 미확정: " + str(e))
+    except StateLockError:
+        # Acquisition failure must never enter pull/job/push or expose a path.
+        logger.error("상태 잠금 실패 — 이번 실행을 중단합니다")
+        tg.send_message("⚠️ ATR 모니터 중단 — 상태 잠금을 확보하지 못했습니다", parse_mode="")
+        sys.exit(1)
     if _problems:
         # 상태는 위에서 이미 저장했다. 실패를 초록색으로 끝내지 않는다.
         lines = "\n".join(f"• {problem}" for problem in _problems[:10])

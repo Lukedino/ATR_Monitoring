@@ -66,6 +66,10 @@ class _Files:
     def get_media(self, fileId):
         return _Req(lambda: self.content)
 
+    def get(self, fileId, fields):
+        assert fields == "md5Checksum"
+        return _Req(lambda: {"md5Checksum": hashlib.md5(self.content).hexdigest()})
+
     def update(self, fileId, media_body, fields=None):
         body = media_body.getbytes(0, media_body.size())
 
