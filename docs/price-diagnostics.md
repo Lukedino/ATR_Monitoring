@@ -39,3 +39,38 @@ where it is first observed. They do not verify real input truth, prove a specifi
 provider at fault, repair operational inputs, or demonstrate successful operation.
 Verification uses synthetic frames, fake providers and the source-only offline
 harness. Operational dispatch, live data and alert delivery are not test tools.
+
+## What the diagnostics found — 2026-09-22
+
+Run 35774183850 (19:30Z) emitted
+`history_normalized.close_above_high.latest.first_observed;
+latest_quote.close_above_high.latest.already_observed`.
+
+The relationship is already broken in the frame leaving provider history
+normalisation, before any raw fallback or latest-quote merge. `raw_fallback`
+never appeared, and `latest_quote` reports only what was already present. The
+location is `latest`: the final row alone, with clean history behind it.
+
+Three runs of the same commit after the US close (20:05Z, 20:30Z, 21:05Z)
+emitted no diagnostic and rejected no symbol. The failing run was intraday
+(15:30 EDT). An in-progress bar can carry a Close above a High the provider has
+not yet raised.
+
+### Resulting contract
+
+`_confirmed_frame()` in `atr_calculator.py` drops that single unconfirmed bar and
+computes ATR, Highest High and the 21-day EMA from confirmed history. It applies
+only when the inconsistency is confined to the last row; an inconsistency in any
+earlier row is treated as provider corruption and rejected exactly as before.
+Prices are never edited, rows are never synthesised, and the tolerance, ATR
+period, multiple, market windows, stop policy, state writes, notifications and
+exit codes are unchanged.
+
+`current_close` still comes from the raw final row. Retreating to the previous
+session's close would measure the stop distance against a stale price and could
+miss a symbol that has since fallen through its stop.
+
+Trimming can leave fewer rows than the calculation needs; that is reported as the
+existing `insufficient_history`, not as a silent success. This contract addresses
+the rejection boundary only. It does not verify provider truth, repair inputs, or
+prove that any particular operational run succeeded.

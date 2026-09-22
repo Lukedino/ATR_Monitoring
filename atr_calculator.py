@@ -43,13 +43,34 @@ def _validated_price_frame(df: pd.DataFrame, min_rows: int = 1):
     return validate_price_frame(df, min_rows)
 
 
+def _confirmed_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """진행 중인 봉을 뺀 확정 이력을 돌려준다. 원본은 바꾸지 않는다.
+
+    장중에는 공급자의 High/Low 가 아직 갱신되지 않은 상태에서 Close(현재가)가 그 범위를
+    벗어날 수 있다. 2026-09-22 실측에서 US 장중(19:30Z) 실행만 5종목이 거절됐고 장 마감
+    뒤 세 번의 실행은 진단 없이 전부 성공했다. 같은 실행의 단계 진단도
+    `history_normalized...latest.first_observed` 로, 수집 변환이 아니라 원자료의 마지막
+    봉에서 이미 어긋나 있음을 가리켰다.
+
+    그래서 모순이 **마지막 행에만** 있으면 그 미확정 봉을 빼고 확정된 이력으로 계산한다.
+    과거 행에 모순이 있으면 공급자 자료 오류이므로 잘라내지 않고 기존대로 거절시킨다.
+    가격을 고치거나 행을 채워 넣지 않으며, 허용 오차·기간·배수도 그대로다.
+    """
+    if not isinstance(df, pd.DataFrame) or len(df) < 2:
+        return df
+    if validate_price_frame(df)[1] != "inconsistent_prices":
+        return df
+    trimmed = df.iloc[:-1]
+    return trimmed if validate_price_frame(trimmed)[1] is None else df
+
+
 def atr_input_issue(df: pd.DataFrame, period: int = ATR_PERIOD,
                     hh_window: int = 20) -> str | None:
     """Return a value-free reason code for an unusable Chandelier input."""
     if (isinstance(period, bool) or not isinstance(period, (int, np.integer)) or period < 1 or
             isinstance(hh_window, bool) or not isinstance(hh_window, (int, np.integer)) or hh_window < 1):
         return "invalid_period"
-    return _validated_price_frame(df, max(period, hh_window) + 1)[1]
+    return _validated_price_frame(_confirmed_frame(df), max(period, hh_window) + 1)[1]
 
 
 def _has_current_atr(series: pd.Series, index: pd.Index) -> bool:
@@ -252,15 +273,19 @@ def calc_chandelier_stop(
     if atr_input_issue(df, period, hh_window):
         return None
 
-    atr_series  = calc_atr(df, period)
-    atr_pct_ser = calc_atr_pct(df, period)
+    # 진행 중인 봉이 있으면 확정된 이력으로 ATR·Highest High·EMA 를 계산한다.
+    frame = _confirmed_frame(df)
+    atr_series  = calc_atr(frame, period)
+    atr_pct_ser = calc_atr_pct(frame, period)
 
-    if not _has_current_atr(atr_series, df.index) or not _has_current_atr(atr_pct_ser, df.index):
+    if not _has_current_atr(atr_series, frame.index) or not _has_current_atr(atr_pct_ser, frame.index):
         return None
 
-    prices, _ = _validated_price_frame(df)
+    prices, _ = _validated_price_frame(frame)
     current_atr   = float(atr_series.iloc[-1])
     current_pct   = float(atr_pct_ser.iloc[-1])
+    # 현재가만은 원본의 마지막 행이다. 확정 이력으로 물러나면 Stop 거리를 옛 종가로 재게 되고
+    # 그 사이 하락한 종목의 이탈을 놓친다.
     current_close = float(df["Close"].iloc[-1])
     highest_high  = float(prices["High"].iloc[-hh_window:].max())
 
