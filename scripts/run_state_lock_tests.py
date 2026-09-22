@@ -22,7 +22,7 @@ import threading
 
 
 FILES = (
-    "state_lock.py", "state_validation.py", "stop_manager.py",
+    "state_lock.py", "state_validation.py", "stop_manager.py", "position_commands.py",
     "market_dates.py", "symbol_market.py",
     "scripts/run_offline_tests.py", "scripts/state_lock_worker.py",
 )

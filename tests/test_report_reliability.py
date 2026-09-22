@@ -207,5 +207,6 @@ def test_successful_photo_still_returns_true(monkeypatch):
     monkeypatch.setattr(telegram, "_is_configured", lambda: True)
     response = requests.Response()
     response.status_code = 200
+    response._content = b'{"ok":true}'
     monkeypatch.setattr(telegram.requests, "post", lambda *a, **k: response)
     assert telegram.send_photo(b"synthetic-png") is True

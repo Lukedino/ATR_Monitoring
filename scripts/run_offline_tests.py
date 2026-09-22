@@ -86,7 +86,8 @@ def snapshot(source, target):
         files.extend(path for path in (source / directory).rglob("*")
                      if path.is_file() and path.suffix in {".py", ".txt", ".yaml", ".yml"}
                      and "__pycache__" not in path.parts)
-    files.extend(path for path in (source / "requirements.txt", source / "requirements-dev.txt") if path.exists())
+    files.extend(path for path in (source / "requirements.txt", source / "requirements-dev.txt",
+                                   source / "constraints.txt") if path.exists())
     for path in files:
         if path.is_symlink() or not within(path, source):
             raise RuntimeError("Code snapshot cannot include linked external files")

@@ -89,11 +89,15 @@ def _now() -> str:
 
 @state_locked(_state_path)
 def _load_raw() -> dict:
+    from position_commands import assert_no_pending
+    assert_no_pending(DATA_FILE)
     return read_state(DATA_FILE, missing_ok=True)
 
 
 @state_locked(_state_path)
 def _save_raw(raw: dict) -> None:
+    from position_commands import assert_no_pending
+    assert_no_pending(DATA_FILE)
     # A malformed existing file needs explicit recovery, never silent reset.
     read_state(DATA_FILE, missing_ok=True)
     write_state(DATA_FILE, raw)

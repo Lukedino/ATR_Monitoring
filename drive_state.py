@@ -96,21 +96,41 @@ class DriveState:
 
     @state_locked(lambda self: self.local_path)
     def _pull_locked(self) -> dict:
+        self._guard_pending()
+        raw = self.observe()
+        data = validate_state_bytes(raw)
+        try:
+            atomic_write_state_bytes(self.local_path, raw)
+        except StateValidationError as error:
+            self._pulled_md5 = None
+            raise StateSyncError(str(error)) from None
+        logger.info("Drive 상태 파일 로드 — %d bytes, alert_log %d건", len(raw), len(data.get("alert_log", {})))
+        return data
+
+    def _guard_pending(self):
+        # 미게시 관리 후보를 일반 pull/push가 지우거나 우회하지 못하게 한다.
+        from position_commands import PositionCommandError, assert_no_pending
+        try:
+            assert_no_pending(self.local_path, remote=True)
+        except PositionCommandError:
+            self._pulled_md5 = None
+            raise StateSyncError("State management recovery is required before Drive synchronization") from None
+
+    @state_locked(lambda self: self.local_path)
+    def observe(self) -> bytes:
+        """로컬 정본을 건드리지 않고 원격 바이트와 게시 기준 MD5를 취득한다.
+
+        관리 복구 전용 경계이며 일반 실행은 pending 보호가 있는 pull을 쓴다.
+        """
         # A failed refresh must not leave an older download authorizing writes.
         self._pulled_md5 = None
         try:
             raw = self.service.files().get_media(fileId=self.file_id).execute()
         except Exception:
             raise StateSyncError("Drive state download failed") from None
-        data = validate_state_bytes(raw)              # 실패 시 로컬 파일은 건드리지 않는다
-        downloaded_md5 = _md5(raw)
-        try:
-            atomic_write_state_bytes(self.local_path, raw)
-        except StateValidationError as error:
-            raise StateSyncError(str(error)) from None
-        self._pulled_md5 = downloaded_md5
-        logger.info("Drive 상태 파일 로드 — %d bytes, alert_log %d건", len(raw), len(data.get("alert_log", {})))
-        return data
+        validate_state_bytes(raw)
+        self._pulled_md5 = _md5(raw)
+        return raw
 
     def push(self) -> bool:
         """검증한 pull 이후 변경분만 사전 충돌 검사 후 올린다. 올렸으면 True.
@@ -127,12 +147,21 @@ class DriveState:
 
     @state_locked(lambda self: self.local_path)
     def _push_locked(self) -> bool:
+        self._guard_pending()
         try:
             if not self.local_path.exists():
                 return False
             raw = self.local_path.read_bytes()
         except OSError:
             raise StateSyncError("Local state file could not be read") from None
+        return self.publish(raw)
+
+    @state_locked(lambda self, raw: self.local_path)
+    def publish(self, raw: bytes) -> bool:
+        """동일 client가 observe한 기준에 검증된 후보 1개를 게시한다.
+
+        내구 후보/복구 판단은 position_commands가 담당하며 자동 재시도는 없다.
+        """
         local_md5 = _md5(raw)
         if local_md5 == self._pulled_md5:
             return False

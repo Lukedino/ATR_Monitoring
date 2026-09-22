@@ -12,6 +12,7 @@ Telegram Bot API를 requests로 직접 호출합니다.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import datetime
 
@@ -96,6 +97,17 @@ def _describe(exc: Exception) -> str:
 SEND_ATTEMPTS = 3
 
 
+def _confirmed(response) -> bool:
+    """HTTP와 Telegram의 명시적 성공 응답을 함께 확인한다."""
+    if response.status_code != 200:
+        return False
+    try:
+        result = response.json()
+    except (ValueError, TypeError):
+        return False
+    return isinstance(result, dict) and result.get("ok") is True
+
+
 def send_message(text: str, parse_mode: str = "Markdown") -> bool:
     """
     텍스트 메시지를 전송합니다. 성공 여부(bool)를 돌려주며 **호출자는 반드시 확인해야 한다** —
@@ -126,14 +138,20 @@ def send_message(text: str, parse_mode: str = "Markdown") -> bool:
                 continue
             if status == 429 or status >= 500:
                 try:
-                    wait = int(resp.json().get("parameters", {}).get("retry_after", wait))
-                except (ValueError, AttributeError, TypeError):
+                    candidate_wait = int(resp.json().get("parameters", {}).get("retry_after", wait))
+                    if candidate_wait < 0:
+                        raise ValueError()
+                    wait = candidate_wait
+                except (ValueError, AttributeError, TypeError, OverflowError):
                     pass
                 logger.warning("텔레그램 일시 오류 HTTP %s — %d초 뒤 재시도 (%d/%d)",
                                status, wait, attempt, SEND_ATTEMPTS)
                 time.sleep(min(wait, 30))
                 continue
             resp.raise_for_status()
+            if not _confirmed(resp):
+                logger.error("텔레그램 메시지 수신 미확인: telegram_response_unconfirmed")
+                return False
             logger.info("텔레그램 메시지 전송 성공")
             return True
         except requests.RequestException as exc:
@@ -180,16 +198,22 @@ def send_photo(image_bytes: bytes, caption: str = "") -> bool:
 
         if resp.status_code == 429:
             # retry_after 파싱 후 최소 30초 대기 (Telegram 권장)
-            retry_after = max(
-                resp.json().get("parameters", {}).get("retry_after", 30),
-                30,
-            )
+            try:
+                retry_after = max(resp.json().get("parameters", {}).get("retry_after", 30), 30)
+                if not math.isfinite(retry_after):
+                    raise ValueError()
+            except (ValueError, AttributeError, TypeError, OverflowError):
+                logger.error("텔레그램 이미지 수신 미확인: telegram_response_unconfirmed")
+                return False
             logger.warning("Rate limit (시도 %d/3) — %d초 대기", attempt + 1, retry_after)
             time.sleep(retry_after)
             continue   # 재시도
 
         try:
             resp.raise_for_status()
+            if not _confirmed(resp):
+                logger.error("텔레그램 이미지 수신 미확인: telegram_response_unconfirmed")
+                return False
             logger.info("텔레그램 이미지 전송 성공")
             return True
         except requests.exceptions.HTTPError as exc:

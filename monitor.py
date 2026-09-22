@@ -13,20 +13,10 @@
   python monitor.py --remove-pos 005930.KS             ← 포지션 제거
   python monitor.py --list-pos                         ← 포지션 현황 출력
 
-GitHub Actions 환경:
-  환경변수 GITHUB_ACTIONS=true 시 스케줄러 없이 단일 실행 후 종료
-  환경변수 GHA_JOB 으로 실행할 작업 지정:
-    stop_check        — 전 종목 Chandelier Stop 갱신 (평일 30분 주기)
-    crypto_stop_check — 크립토 전용 Stop 갱신 (주말 30분 주기)
-    kr_daily_report   — 국내 종목 주간 리포트 (KST 금요일 18:00)
-    us_daily_report   — 미국+크립토 주간 리포트 (KST 토요일 08:00)
-    trigger_check     — 즉각 대응 트리거 체크
-
-스케줄 (GHA, KST 기준):
-  평일 00:00~23:30 (30분 간격) — stop_check (전 종목)
-  주말 00:00~23:30 (30분 간격) — crypto_stop_check (크립토)
-  평일 18:00 — kr_daily_report
-  매일 08:00 — us_daily_report (미국장 포스트마켓 종료 후)
+GitHub Actions는 외부 dispatch로 한 번 실행하며 GHA_JOB이 작업을 고른다.
+auto는 전 종목 Stop 점검 후 market_hours의 현행 창에 해당하는 추가 작업을 실행한다.
+로컬 데몬은 config의 KR/US 시각에 매일 리포트, 30분 Stop, 10분 트리거를 실행한다.
+관리 명령의 --state-scope local|drive, --replace, --recover-state는 position_cli가 처리한다.
 """
 from __future__ import annotations
 
@@ -35,6 +25,13 @@ import logging
 import os
 import sys
 import time
+
+# Administration must validate arguments before config can load a portfolio.
+if __name__ == '__main__':
+    from position_cli import maybe_run
+    administration_result = maybe_run(sys.argv[1:])
+    if administration_result is not None:
+        raise SystemExit(administration_result)
 
 import log_masking
 log_masking.install_exception_hooks_for_github_actions()
@@ -547,6 +544,7 @@ def run_github_actions_mode() -> None:
       GHA_JOB=us_daily_report            — 미국+크립토 리포트 (KST 09:00)
       GHA_JOB=trigger_check              — 트리거 체크
     """
+    _problems.clear()
     job_name = os.getenv("GHA_JOB", "stop_check")
     logger.info("GitHub Actions 모드 — 작업: %s", job_name)
 
@@ -617,46 +615,98 @@ def run_github_actions_mode() -> None:
 # 로컬 스케줄러 데몬
 # ─────────────────────────────────────────────────────────────
 
+def _execute_local_jobs(functions) -> int:
+    """One invocation owns its problems; preserve successful earlier state writes."""
+    _problems.clear()
+    for function in functions:
+        try:
+            before = len(_problems)
+            if function() is False and len(_problems) == before:
+                _note_problem('필수 작업이 실패 상태를 반환했습니다')
+        except Exception as error:
+            _note_problem('로컬 작업 실패: ' + type(error).__name__)
+    if _problems:
+        logger.error('로컬 실행 실패 — 문제 %d건', len(_problems))
+        return 1
+    logger.info('로컬 실행 완료')
+    return 0
+
+
+def _scheduled_job(function):
+    # Returning a failure code allows schedule to keep the original next run.
+    return _execute_local_jobs([function])
+
+
+def _job_chart(symbol):
+    symbol = symbol.strip().upper()
+    if not symbol or any(char.isspace() or ord(char) < 32 for char in symbol):
+        raise ValueError('chart_symbol_invalid')
+    frame = fetch_ohlcv(symbol)
+    if frame is None or frame.empty or atr_input_issue(frame, ATR_PERIOD):
+        _note_problem('차트 시세 입력을 확인할 수 없습니다')
+        tg.send_message(f'{symbol} 데이터 조회 실패')
+        return False
+    record = load_stops().get(symbol)
+    chart = plot_atr_chart(symbol, frame, registered_stop=record.current_stop if record else None, as_bytes=True)
+    if not chart or not tg.send_photo(chart, caption=f'{symbol} ATR({ATR_PERIOD}일) 차트'):
+        _note_problem('차트 전송을 확인할 수 없습니다')
+        return False
+    return True
+
+
 def run_scheduler() -> None:
-    # 국내 일일 리포트 (KST 17:00, 평일)
-    schedule.every().day.at(KR_REPORT_TIME).do(job_kr_daily_report)
+    # Preserve the existing local daily schedule; GHA uses dispatch windows.
+    schedule.every().day.at(KR_REPORT_TIME).do(_scheduled_job, job_kr_daily_report)
 
     # 미국+크립토 일일 리포트 (KST 09:00, 매일)
-    schedule.every().day.at(US_REPORT_TIME).do(job_us_daily_report)
+    schedule.every().day.at(US_REPORT_TIME).do(_scheduled_job, job_us_daily_report)
 
     # 전 종목 Stop 체크 (30분 주기, 24h)
-    schedule.every(30).minutes.do(job_stop_check)
+    schedule.every(30).minutes.do(_scheduled_job, job_stop_check)
 
     # 즉각 트리거 체크 (10분 주기, 24h)
-    schedule.every(10).minutes.do(job_trigger_check)
+    schedule.every(10).minutes.do(_scheduled_job, job_trigger_check)
 
     logger.info("스케줄러 시작 — Ctrl+C로 종료")
-    tg.send_message(
+    if not tg.send_message(
         f"ATR 모니터링 시작\n"
         f"모니터링: {len(ALL_SYMBOLS)}종목 "
         f"(KR {len(KR_SYMBOLS)} / US {len(US_SYMBOLS)} / Crypto {len(CRYPTO_SYMBOLS)})\n"
-        f"주간 리포트: KR 금요일 {KR_REPORT_TIME} / US·Crypto 토요일 {US_REPORT_TIME}\n"
+        f"로컬 일일 리포트: KR 매일 {KR_REPORT_TIME} / US·Crypto 매일 {US_REPORT_TIME}\n"
         f"Stop 체크: 30분 주기 / 트리거: 10분 주기"
-    )
+    ):
+        _note_problem('스케줄러 시작 알림 전송 미확인')
     try:
         while True:
-            schedule.run_pending()
+            try:
+                schedule.run_pending()
+            except Exception as error:
+                _note_problem('예약 실행 오류: ' + type(error).__name__)
             time.sleep(30)
     except KeyboardInterrupt:
         logger.info("스케줄러 종료")
-        tg.send_message("ATR 모니터링 종료")
+        if not tg.send_message("ATR 모니터링 종료"):
+            _note_problem('스케줄러 종료 알림 전송 미확인')
 
 
 # ─────────────────────────────────────────────────────────────
 # CLI 진입점
 # ─────────────────────────────────────────────────────────────
 
-def main() -> None:
+def main() -> int:
+    from position_cli import maybe_run
+    administration_result = maybe_run(sys.argv[1:])
+    if administration_result is not None:
+        if administration_result:
+            raise SystemExit(administration_result)
+        return 0
+
     if IS_GITHUB_ACTIONS:
         run_github_actions_mode()
-        return
+        return 0
 
-    parser = argparse.ArgumentParser(description="포트폴리오 ATR Trailing Stop 모니터")
+    parser = argparse.ArgumentParser(description="포트폴리오 ATR Trailing Stop 모니터",
+        epilog='관리·복구 옵션: python position_cli.py --help (--state-scope, --replace, --recover-state)')
     group  = parser.add_mutually_exclusive_group()
     group.add_argument("--once",          action="store_true", help="즉시 1회 전체 리포트 (KR+US+Crypto)")
     group.add_argument("--stop-check",    action="store_true", help="즉시 1회 Stop 갱신 체크")
@@ -676,37 +726,26 @@ def main() -> None:
         raise SystemExit(1)
 
     if args.once:
-        job_kr_daily_report()
-        job_us_daily_report()
+        code = _execute_local_jobs([job_kr_daily_report, job_us_daily_report])
     elif args.stop_check:
-        job_stop_check()
+        code = _execute_local_jobs([job_stop_check])
     elif args.trigger_check:
-        job_trigger_check()
+        code = _execute_local_jobs([job_trigger_check])
     elif args.kr_report:
-        job_kr_daily_report()
+        code = _execute_local_jobs([job_kr_daily_report])
     elif args.us_report:
-        job_us_daily_report()
+        code = _execute_local_jobs([job_us_daily_report])
     elif args.chart:
-        sym = args.chart.upper()
-        df  = fetch_ohlcv(sym)
-        if df.empty:
-            tg.send_message(f"{sym} 데이터 조회 실패")
-            return
-        rec   = load_stops().get(sym)
-        chart = plot_atr_chart(sym, df, registered_stop=rec.current_stop if rec else None, as_bytes=True)
-        tg.send_photo(chart, caption=f"{sym} ATR({ATR_PERIOD}일) 차트")
-    elif args.add_pos:
-        sym, entry_s, stop_s = args.add_pos
-        rec = add_position(sym.upper(), float(entry_s), float(stop_s))
-        print(f"등록 완료: {rec.symbol}  진입가={rec.entry_price}  Stop={rec.current_stop}")
-    elif args.remove_pos:
-        ok = remove_position(args.remove_pos.upper())
-        print("제거 완료" if ok else "포지션 없음")
-    elif args.list_pos:
-        print(stop_summary_text())
+        code = _execute_local_jobs([lambda: _job_chart(args.chart)])
+    elif args.add_pos or args.remove_pos or args.list_pos:
+        parser.error('관리 명령을 검증하지 못했습니다')
     else:
         run_scheduler()
+        return 0
+    if code:
+        raise SystemExit(code)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

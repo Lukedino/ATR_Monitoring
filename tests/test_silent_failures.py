@@ -186,7 +186,8 @@ import telegram_bot
 
 class _Resp:
     def __init__(self, status, payload=None):
-        self.status_code, self._payload = status, payload or {}
+        self.status_code = status
+        self._payload = ({"ok": True} if status == 200 else {}) if payload is None else payload
 
     def raise_for_status(self):
         if self.status_code >= 400:

@@ -1,5 +1,13 @@
 # Portfolio ATR Monitor — 개발 로그
 
+## 2026-09-22 — 관리 후보 보존·입력 검증·로컬 실패 결과
+
+관리 옵션은 포트폴리오/시세 import 전에 분기한다. 명시 local/drive 모드와 replace/recovery를 추가하고, 미게시·미확정 후보는 비공개 저널에 보존한다. 다음 Drive pull이 로컬 관리 변경을 지우지 못하게 막으며 원격 후보 확인 후에만 로컬을 승격한다. 현재 계약과 복구 명령은 `docs/management-and-local-outcomes.md`에 정리했다.
+
+CSV/XLSX 전체 행·헤더·진입가를 검증한 뒤 메타데이터를 반영한다. Excel 오류 셀을 빈 선택 입력으로 받아들이지 않는다. 일반 Telegram은 HTTP200+JSON ok=true를 확인하고, 로컬 필수 작업 실패는 종료1로 전달한다. 개별 예약 작업 실패 뒤에도 기존 예약을 계속한다. GHA에서 관리 인자를 운영 작업으로 오인해 실행하지 않는다.
+
+독립 반례 검토와 전이 제약 연결 후 Windows Python3.12.8 전체 합성 **1251 통과·1 OS 제외**, 실제 OS 잠금 **5 통과(9합성 workers)**, 예상 밖 guard0. 직접 제품10핀은 유지하고 `constraints.txt`로 전이를 고정했으며 Python3.11/3.12·Windows/Linux의 운영/시험 8개 resolver 조합을 대조했다. 표적 검사 건수는 중첩되므로 더하지 않는다. 이 검사는 실제 포트폴리오·Drive·Telegram·운영 실행이나 알림/상태의 분산 원자성을 검증한 결과가 아니다. 정확한 반영 HEAD의 원격 CI 결과는 후속 검증 기록과 구분한다.
+
 ## 프로젝트 개요
 
 포트폴리오 종목의 ATR(Average True Range) 기반 Trailing Stop을 자동 모니터링하고

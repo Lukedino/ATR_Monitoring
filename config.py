@@ -4,6 +4,10 @@
 """
 import json
 import os
+import csv
+import io
+import math
+import re
 from dotenv import load_dotenv
 from symbol_market import get_trading_market, is_ambiguous_numeric_symbol
 
@@ -54,37 +58,157 @@ _CATEGORY_SUFFIX: dict[str, str] = {
 }
 
 
+def _cell_blank(value) -> bool:
+    import pandas as pd
+    if isinstance(value, str):
+        return not value.strip()
+    return value is None or bool(pd.isna(value))
+
+
+def _cell_text(value, *, identifier=False) -> str:
+    if _cell_blank(value):
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("portfolio_cell_invalid")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("portfolio_cell_invalid")
+    text = value.strip()
+    if identifier and (any(char.isspace() for char in text) or '"' in text):
+        raise ValueError("portfolio_symbol_invalid")
+    return text
+
+
+def _portfolio_headers(columns):
+    if any(not isinstance(value, str) or not value.strip() for value in columns):
+        raise ValueError("portfolio_header_invalid")
+    headers = [_cell_text(value) for value in columns]
+    if len({value.casefold() for value in headers}) != len(headers):
+        raise ValueError("portfolio_duplicate_header")
+    if "구분" not in headers or not ({"Ticker", "종목"} & set(headers)):
+        raise ValueError("portfolio_header_missing")
+    return headers
+
+
+def _validate_csv_quoting(text, delimiter):
+    """따옴표를 임의로 복구하거나 필드 중간의 따옴표를 묵인하지 않는다."""
+    state, index = "start", 0
+    while index < len(text):
+        char = text[index]
+        if state == "quoted":
+            if char == '"':
+                if index + 1 < len(text) and text[index + 1] == '"':
+                    index += 1
+                else:
+                    state = "closed"
+        elif char in (delimiter, "\r", "\n"):
+            state = "start"
+        elif char == '"' and state == "start":
+            state = "quoted"
+        elif char == '"' or state == "closed":
+            raise ValueError("portfolio_csv_invalid")
+        else:
+            state = "unquoted"
+        index += 1
+    if state == "quoted":
+        raise ValueError("portfolio_csv_invalid")
+
+
+def _portfolio_frame_from_bytes(raw, *, excel=False):
+    """헤더와 CSV 행 길이를 손실 없이 검사하고 문자열 표를 만든다."""
+    import pandas as pd
+    if excel:
+        # pandas는 Excel 오류 셀을 NaN/빈값으로 바꾸므로 선택 입력과
+        # 구분할 수 없어진다. 같은 첫 시트의 원천 오류를 먼저 거절한다.
+        import openpyxl
+        workbook = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True, keep_links=False)
+        try:
+            if not workbook.worksheets:
+                raise ValueError("portfolio_empty")
+            for row in workbook.worksheets[0].iter_rows():
+                if any(cell.data_type == "e" for cell in row):
+                    raise ValueError("portfolio_excel_cell_error")
+        finally:
+            workbook.close()
+        table = pd.read_excel(io.BytesIO(raw), header=None, dtype=str, keep_default_na=False)
+        if table.empty:
+            raise ValueError("portfolio_empty")
+        headers = _portfolio_headers(list(table.iloc[0]))
+        frame = table.iloc[1:].copy()
+        frame.columns = headers
+        return frame
+    try:
+        text = raw.decode("utf-8-sig", errors="strict")
+        first = text.splitlines()[0] if text else ""
+        dialect = csv.Sniffer().sniff(first, delimiters=",;\t|")
+        _validate_csv_quoting(text, dialect.delimiter)
+        records = list(csv.reader(io.StringIO(text, newline=""), delimiter=dialect.delimiter,
+                                  quotechar='"', doublequote=True, strict=True))
+    except (UnicodeError, csv.Error):
+        raise ValueError("portfolio_csv_invalid") from None
+    if not records:
+        raise ValueError("portfolio_empty")
+    headers = _portfolio_headers(records[0])
+    rows = []
+    for row in records[1:]:
+        if not row:
+            continue
+        if len(row) != len(headers):
+            raise ValueError("portfolio_row_width_invalid")
+        if all(_cell_blank(value) for value in row):
+            continue
+        rows.append(row)
+    return pd.DataFrame(rows, columns=headers)
+
+
+def _entry_price(value):
+    if _cell_blank(value):
+        return None
+    text = _cell_text(value)
+    if not re.fullmatch(r"[+-]?(?:(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", text):
+        raise ValueError("portfolio_entry_price_invalid")
+    price = float(text.replace(",", ""))
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError("portfolio_entry_price_invalid")
+    return price
+
+
 def _parse_portfolio_df(df) -> dict[str, list[str]]:
     """
     Excel 복사 형식 DataFrame → PORTFOLIO dict.
     컬럼: 계좌, 구분, 종목(종목명), Ticker(종목코드), 거래일, 진입가격
     - Ticker 컬럼 우선 사용 (종목코드: 005930 / AAPL / BTC)
-    - Ticker 없으면 종목 컬럼 사용 (US/크립토는 종목명 = ticker 코드)
+    - Ticker 열 자체가 없을 때만 종목 컬럼 사용 (빈 Ticker를 이름으로 대체하지 않음)
     - 구분 컬럼으로 yfinance suffix 자동 결정
     - 계좌 컬럼 → _symbol_accounts 에 수집
     - 종목명 → _kr_names_from_drive 에 수집 (Ticker 컬럼 사용 시)
     """
     global _kr_names_from_drive, _symbol_accounts, _symbol_entry_prices
-    df.columns = [str(c).strip() for c in df.columns]
+    df = df.copy()
+    df.columns = _portfolio_headers(list(df.columns))
+    names, accounts = {}, {}
     _ep_acc: dict[str, list[float]] = {}
     symbols: list[str] = []
     # 진단 카운터 (총 행 수 vs 유효 / 중복 / 스킵 분류)
     _stat_total      = 0   # 전체 행
-    _stat_skipped    = 0   # 빈 ticker 스킵
+    _stat_skipped    = 0   # 완전히 빈 구분행만 제외
     _stat_duplicate  = 0   # 중복 종목 (다계좌 보유)
     for _, row in df.iterrows():
         _stat_total += 1
-        category = str(row.get("구분", "")).strip()
-        account  = str(row.get("계좌", "")).strip()
-        name     = str(row.get("종목", "")).strip()   # 종목명 (표시용)
-
-        # Ticker 컬럼 우선 — 없으면 종목 컬럼을 코드로 사용
-        ticker_raw = str(row.get("Ticker", "")).strip()
-        ticker = ticker_raw if (ticker_raw and ticker_raw != "nan") else name
-
-        if not ticker or ticker == "nan":
+        if all(_cell_blank(value) for value in row):
             _stat_skipped += 1
             continue
+        category = _cell_text(row.get("구분", ""))
+        account = _cell_text(row.get("계좌", ""))
+        name = _cell_text(row.get("종목", ""))
+        if category not in _CATEGORY_SUFFIX:
+            raise ValueError("portfolio_category_invalid")
+
+        # Ticker 컬럼 우선 — 없으면 종목 컬럼을 코드로 사용
+        ticker_raw = _cell_text(row.get("Ticker", ""), identifier=True)
+        ticker = ticker_raw if "Ticker" in df.columns else _cell_text(name, identifier=True)
+
+        if not ticker:
+            raise ValueError("portfolio_symbol_invalid")
 
         # 접미사 중복 방지 + 시트 값 신뢰
         # ① 이미 명시적 접미사(.KS/.KQ/-USD/-USDT)가 붙어 있으면 시트 값 그대로 사용
@@ -98,6 +222,8 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
         )
 
         if _existing_suffix:
+            if len(ticker) == len(_existing_suffix):
+                raise ValueError("portfolio_symbol_invalid")
             symbol = ticker  # 시트가 이미 완성된 yfinance 심볼 → 그대로 사용
         else:
             suffix = _CATEGORY_SUFFIX.get(category, "")
@@ -122,26 +248,27 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
             _stat_duplicate += 1            # 다계좌 보유 등으로 동일 심볼 재출현
 
         # 종목명 수집 (Ticker 컬럼이 있을 때만 — 이름 ≠ 코드)
-        if ticker_raw and ticker_raw != "nan" and name and name != "nan":
-            _kr_names_from_drive[symbol] = name
+        if ticker_raw and name:
+            names[symbol] = name
 
         # 계좌 매핑 수집 (같은 종목이 여러 계좌에 있으면 모두 기록)
-        if account and account != "nan":
-            acct_list = _symbol_accounts.setdefault(symbol, [])
+        if account:
+            acct_list = accounts.setdefault(symbol, [])
             if account not in acct_list:
                 acct_list.append(account)
 
         # 진입가격 수집 (같은 종목 복수 계좌면 평균)
-        ep_str = str(row.get("진입가격", "")).strip()
-        if ep_str and ep_str != "nan":
-            try:
-                ep = float(ep_str.replace(",", ""))
-                if ep > 0:
-                    _ep_acc.setdefault(symbol, []).append(ep)
-            except ValueError:
-                pass
+        ep = _entry_price(row.get("진입가격", ""))
+        if ep is not None:
+            _ep_acc.setdefault(symbol, []).append(ep)
 
-    _symbol_entry_prices = {sym: sum(v) / len(v) for sym, v in _ep_acc.items()}
+    # 전체 행 검증 전에는 직전 목록의 이름·계좌·진입가를 변경하지 않는다.
+    result = _validated_portfolio({"포트폴리오": symbols})
+    entry_prices = {sym: math.fsum(value / len(values) for value in values)
+                    for sym, values in _ep_acc.items()}
+    _kr_names_from_drive = names
+    _symbol_accounts = accounts
+    _symbol_entry_prices = entry_prices
 
     # 진단 로그: 총 행 vs 유효/중복/스킵 분류 → 종목 수 차이 원인 추적
     import logging as _log
@@ -149,7 +276,7 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
         "포트폴리오 파싱 결과: 시트 %d행 → 유효 %d종목 (다계좌 중복 %d, 빈행 스킵 %d)",
         _stat_total, len(symbols), _stat_duplicate, _stat_skipped,
     )
-    return {"포트폴리오": symbols}
+    return result
 
 
 def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
@@ -162,8 +289,6 @@ def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
     if not sa_json or not file_id:
         return None
     try:
-        import io
-        import pandas as pd
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
 
@@ -179,22 +304,23 @@ def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
         if mime == "application/vnd.google-apps.spreadsheet":
             # Google Sheets → CSV export
             raw = service.files().export(fileId=file_id, mimeType="text/csv").execute()
-            df  = pd.read_csv(io.StringIO(raw.decode("utf-8")), sep=None, engine="python", dtype=str)
+            df = _portfolio_frame_from_bytes(raw)
         elif mime in (
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "application/vnd.ms-excel",
         ):
             # 업로드된 Excel (.xlsx / .xls) → 이진 파일로 읽기
             raw = service.files().get_media(fileId=file_id).execute()
-            df  = pd.read_excel(io.BytesIO(raw), dtype=str)
+            df = _portfolio_frame_from_bytes(raw, excel=True)
         else:
             # CSV 또는 텍스트 파일
             raw = service.files().get_media(fileId=file_id).execute()
-            df  = pd.read_csv(io.StringIO(raw.decode("utf-8")), sep=None, engine="python", dtype=str)
+            df = _portfolio_frame_from_bytes(raw)
 
         import logging as _log
-        _log.getLogger("config").info("Drive 포트폴리오 로드 성공: %d종목 (mime=%s)", len(df), mime)
-        return _parse_portfolio_df(df)
+        portfolio = _parse_portfolio_df(df)
+        _log.getLogger("config").info("Drive 포트폴리오 로드 성공: %d종목", sum(map(len, portfolio.values())))
+        return portfolio
 
     except Exception as exc:
         import logging as _log
