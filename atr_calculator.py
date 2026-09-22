@@ -29,6 +29,7 @@ from config import (
     get_atr_multiple,
 )
 from market_dates import daily_bar_date, market_date
+from price_validation import validate_price_frame
 
 # 모듈 로거. 예전엔 선언 없이 logger.warning 을 불러 KR 가격제한폭 가드가 NameError 를 냈다(ATR-01).
 logger = logging.getLogger(__name__)
@@ -38,40 +39,8 @@ STOP_MISMATCH_RATIO = 1.5
 
 
 def _validated_price_frame(df: pd.DataFrame, min_rows: int = 1):
-    """Validate ATR's H/L/C history without filling or dropping price bars.
-
-    Open is not an ATR/Chandelier input. The collector can intentionally leave
-    it missing on a current quote; only gap detection requires a valid Open.
-    """
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return None, "empty_input"
-    required = ["High", "Low", "Close"]
-    if not set(required).issubset(df.columns) or df.columns.has_duplicates:
-        return None, "missing_price_columns"
-    if (isinstance(df.index, pd.MultiIndex) or df.index.hasnans or
-            df.index.has_duplicates or not df.index.is_monotonic_increasing):
-        return None, "invalid_index"
-    columns = required
-    try:
-        numeric = df[columns].apply(pd.to_numeric, errors="raise")
-        if (any(np.iscomplexobj(numeric[column]) for column in columns) or
-                df[columns].apply(lambda column: column.map(
-                    lambda value: isinstance(value, (bool, np.bool_)))).any().any()):
-            return None, "non_numeric_prices"
-        prices = numeric.astype(float)
-    except (ValueError, TypeError, OverflowError):
-        return None, "non_numeric_prices"
-    if not np.isfinite(prices.to_numpy()).all():
-        return None, "non_finite_prices"
-    if (prices <= 0).any().any():
-        return None, "non_positive_prices"
-    tolerance = prices.abs().max(axis=1) * 1e-7 + 1e-12
-    if ((prices.max(axis=1) - prices["High"] > tolerance).any() or
-            (prices["Low"] - prices.min(axis=1) > tolerance).any()):
-        return None, "inconsistent_prices"
-    if len(df) < min_rows:
-        return None, "insufficient_history"
-    return prices, None
+    """Compatibility entry point for the shared, pure H/L/C validator."""
+    return validate_price_frame(df, min_rows)
 
 
 def atr_input_issue(df: pd.DataFrame, period: int = ATR_PERIOD,

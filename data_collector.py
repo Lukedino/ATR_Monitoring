@@ -21,6 +21,9 @@ import requests
 
 from config import LOOKBACK_DAYS
 from market_dates import daily_bar_date, market_date, utc_now
+from price_diagnostics import (
+    observe_price_stage, price_diagnostic_batch, price_diagnostic_item,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +427,8 @@ def fetch_ohlcv(
         # (tz_convert(None)은 UTC 변환으로 날짜가 밀리므로 replace 방식 사용)
         df = _strip_timezone(df)
 
+        observe_price_stage("history_normalized", df)
+
         # 필요한 컬럼만 유지
         required = ["Open", "High", "Low", "Close", "Volume"]
         missing = [c for c in required if c not in df.columns]
@@ -485,12 +490,14 @@ def fetch_ohlcv(
                                 symbol, abs(_fp - _lc) / _lc * 100,
                             )
                             df = _df_raw
+                            observe_price_stage("raw_fallback", df)
             except Exception as _exc:
                 logger.debug("%s: auto_adjust 품질 검증 실패: %s", symbol, type(_exc).__name__)
 
         # 조회 범위의 시장 날짜는 고정하고 응답 수신 시각으로 미래 quote를 걸러낸다.
         df = _sync_latest_quote(ticker, symbol, df, now_utc=now,
                                 receipt_clock=utc_now if now_utc is None else None)
+        observe_price_stage("latest_quote", df)
 
         # 보완 후에도 stale하면 경고
         last_date_after = daily_bar_date(df.index[-1])
@@ -519,12 +526,14 @@ def fetch_portfolio(
     {symbol: DataFrame}  — 실패한 심볼은 딕셔너리에서 제외
     """
     result: dict[str, pd.DataFrame] = {}
-    for symbol in symbols:
-        df = fetch_ohlcv(symbol, lookback_days)
-        if not df.empty:
-            result[symbol] = df
-        else:
-            logger.warning("건너뜀: %s", symbol)
+    with price_diagnostic_batch():
+        for symbol in symbols:
+            with price_diagnostic_item():
+                df = fetch_ohlcv(symbol, lookback_days)
+            if not df.empty:
+                result[symbol] = df
+            else:
+                logger.warning("건너뜀: %s", symbol)
     logger.info("데이터 수집 완료: %d / %d 종목", len(result), len(symbols))
     return result
 
