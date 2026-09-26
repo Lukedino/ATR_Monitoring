@@ -74,3 +74,18 @@ Trimming can leave fewer rows than the calculation needs; that is reported as th
 existing `insufficient_history`, not as a silent success. This contract addresses
 the rejection boundary only. It does not verify provider truth, repair inputs, or
 prove that any particular operational run succeeded.
+
+### Charts follow the same contract — 2026-09-26
+
+The change above let alerts through for symbols with an unconfirmed last bar, but
+`visualizer.plot_atr_chart()` still computed ATR, ATR% and the stop trail from
+the raw frame. `calc_atr` returns an empty series for that frame, and the rolling
+stop loop raised `IndexError`. Every one of the 33 chart omissions logged from
+2026-09-23 to 2026-09-26 was this `IndexError`, and each failing run also carried a
+`close_*.latest` diagnostic. The text alert was unaffected because the chart is
+sent separately after it.
+
+The chart now draws its indicators (ATR, ATR%, stop trail, 21-day EMA) from
+`_confirmed_frame()`, aligned to the raw index, so they end at the last confirmed
+bar. The price line keeps the raw final Close, which is the price the alert is
+about. Covered by `tests/test_chart_unconfirmed_bar.py`.

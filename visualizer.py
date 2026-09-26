@@ -20,7 +20,7 @@ import matplotlib.patches as mpatches
 import pandas as pd
 
 from config import ATR_PERIOD, CHART_LOOKBACK, CHART_OUTPUT_DIR, fmt_symbol, fmt_price
-from atr_calculator import calc_atr, calc_atr_pct, calc_chandelier_stop
+from atr_calculator import _confirmed_frame, calc_atr, calc_atr_pct, calc_chandelier_stop
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +56,14 @@ def _rolling_chandelier_series(
     Trailing 원칙 적용: Stop은 상향만 허용 (하향 거부).
     Raw 공식만 사용하면 20일 고점이 윈도우 밖으로 빠질 때 Stop이 내려가므로
     max(raw_stop, prev_stop) 으로 항상 상향만 허용합니다.
+
+    계산기와 같은 확정 이력으로 계산하고 원본 인덱스에 맞춘다 — 진행 중인 마지막 봉은 NaN.
+    원본으로 계산하면 그 봉의 H/L/C 모순 때문에 calc_atr 가 빈 시리즈를 돌려 IndexError 가 났다.
     """
     from config import get_atr_multiple
-    from atr_calculator import calc_atr
 
+    index = df.index
+    df = _confirmed_frame(df)
     atr_series = calc_atr(df, period)
     atr_pct    = (atr_series / df["Close"] * 100)
     stops      = pd.Series(index=df.index, dtype=float)
@@ -80,7 +84,7 @@ def _rolling_chandelier_series(
         prev_stop     = stop
 
     stops.name = "ChandelierStop"
-    return stops
+    return stops.reindex(index)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -111,12 +115,15 @@ def plot_atr_chart(
     -------
     PNG 바이트 또는 저장된 파일 경로
     """
-    atr_series  = calc_atr(df, period)
-    atr_pct_ser = calc_atr_pct(df, period)
+    # 지표는 계산기(calc_chandelier_stop)와 같은 확정 이력으로 그린다. 가격선만 원본이라
+    # 진행 중인 봉의 현재가 — 알림의 근거 — 가 마지막 점으로 남는다.
+    confirmed   = _confirmed_frame(df)
+    atr_series  = calc_atr(confirmed, period).reindex(df.index)
+    atr_pct_ser = calc_atr_pct(confirmed, period).reindex(df.index)
     chandelier  = calc_chandelier_stop(symbol, df, period)
 
     # 21일 EMA 시계열
-    ema_series = df["Close"].ewm(span=21, adjust=False).mean()
+    ema_series = confirmed["Close"].ewm(span=21, adjust=False).mean().reindex(df.index)
 
     # 최근 lookback 기간만 표시
     df_plot  = df.iloc[-lookback:]
@@ -156,7 +163,7 @@ def plot_atr_chart(
         linewidth=2.0 if _ema_breached else 1.0,
         linestyle="-",
         alpha=0.9 if _ema_breached else 0.5,
-        label=f"EMA(21) {fmt_price(symbol, float(ema_plot.iloc[-1]))}",
+        label=f"EMA(21) {fmt_price(symbol, float(ema_plot.dropna().iloc[-1]))}",
         zorder=2,
     )
 
