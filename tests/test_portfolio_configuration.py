@@ -1,21 +1,25 @@
 """Import the actual config with synthetic environment and fake Drive only."""
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 
+import openpyxl
 import pytest
 
 
 SYNTHETIC_LIST = {"synthetic": ["SYM-QC1", "999991.KS", "FAKE-USD"]}
 SYNTHETIC_CSV = "Ticker,구분,계좌,종목\nSYM-DRIVE,미국,synthetic-account,synthetic-name\n".encode()
+SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 @pytest.fixture
 def load_config(monkeypatch):
-    def load(values=None, *, csv=SYNTHETIC_CSV, drive_error=None):
+    def load(values=None, *, csv=SYNTHETIC_CSV, drive_error=None, mime="text/csv", exports=None):
         calls = []
         with monkeypatch.context() as context:
             # No inherited account, credential, portfolio, path or dotenv value.
@@ -36,11 +40,15 @@ def load_config(monkeypatch):
             class Files:
                 def get(self, **kwargs):
                     calls.append("metadata")
-                    return Call({"mimeType": "text/csv"})
+                    return Call({"mimeType": mime})
 
                 def get_media(self, **kwargs):
                     calls.append("csv")
                     return Call(csv)
+
+                def export(self, **kwargs):
+                    calls.append("export:" + kwargs["mimeType"])
+                    return Call((exports or {})[kwargs["mimeType"]])
 
             def credentials(info, **kwargs):
                 assert info == {"synthetic": True}
@@ -203,6 +211,31 @@ def test_valid_drive_remains_preferred_over_invalid_unused_legacy_input(load_con
     assert module.ALL_SYMBOLS == ["SYM-DRIVE"]
     assert module.PORTFOLIO_ERROR == ""
     assert calls == ["credentials", "build", "metadata", "csv"]
+
+
+@pytest.mark.parametrize("stored,shown", [(0.2, "0"), (6.5, "7")])
+def test_native_sheet_reads_stored_entry_price_not_display_rounding(load_config, stored, shown):
+    # Google renders a CSV export with each cell's display format, so a
+    # whole-number format turns a sub-unit price into "0" (whole source
+    # rejected) and others into silently rounded prices.
+    header = ["Ticker", "구분", "계좌", "종목", "진입가격"]
+    row = ["SYM-COIN", "크립토", "synthetic-account", "synthetic-name"]
+    workbook = openpyxl.Workbook()
+    workbook.active.append(header)
+    workbook.active.append(row + [stored])
+    workbook.active["E2"].number_format = "_-* #,##0_-;\\-* #,##0_-;_-* \"-\"_-;_-@"
+    xlsx = io.BytesIO()
+    workbook.save(xlsx)
+    displayed = (",".join(header) + "\n" + ",".join(row) + f",  {shown} \n").encode()
+    module, calls = load_config({
+        "GITHUB_ACTIONS": "true", "GOOGLE_SERVICE_ACCOUNT_JSON": '{"synthetic": true}',
+        "GDRIVE_PORTFOLIO_FILE_ID": "synthetic-file",
+    }, mime=SHEET_MIME, exports={"text/csv": displayed, XLSX_MIME: xlsx.getvalue()})
+    assert module.PORTFOLIO_SOURCE == "drive"
+    assert module.PORTFOLIO_ERROR == ""
+    assert module.ALL_SYMBOLS == ["SYM-COIN-USD"]
+    assert module.SYMBOL_ENTRY_PRICES == {"SYM-COIN-USD": stored}
+    assert calls == ["credentials", "build", "metadata", "export:" + XLSX_MIME]
 
 
 @pytest.mark.parametrize("symbol", ["999991", "991", "000991", "999991.0", "000991.00", "0", "9999999"])

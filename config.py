@@ -282,7 +282,7 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
 def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
     """
     Google Drive에서 포트폴리오 파일을 다운로드하여 파싱합니다.
-    Google Sheets / 업로드된 .xlsx / CSV 파일 모두 지원.
+    Google Sheets(xlsx 로 export) / 업로드된 .xlsx / CSV 파일 모두 지원.
     """
     sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     file_id = os.getenv("GDRIVE_PORTFOLIO_FILE_ID", "").strip()
@@ -302,9 +302,13 @@ def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
         mime = meta["mimeType"]
 
         if mime == "application/vnd.google-apps.spreadsheet":
-            # Google Sheets → CSV export
-            raw = service.files().export(fileId=file_id, mimeType="text/csv").execute()
-            df = _portfolio_frame_from_bytes(raw)
+            # Google Sheets → xlsx export. CSV export 는 셀 표시 서식대로 값을 적어
+            # 소수 없는 서식의 0.2 가 "0"(전체 거부), 6.5 가 "7" 로 바뀐다. xlsx 는 저장값.
+            raw = service.files().export(
+                fileId=file_id,
+                mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ).execute()
+            df = _portfolio_frame_from_bytes(raw, excel=True)
         elif mime in (
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "application/vnd.ms-excel",
