@@ -12,7 +12,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from atr_calculator import atr_input_issue, calc_chandelier_stop
+from atr_calculator import (atr_input_issue, calc_atr, calc_atr_pct, calc_chandelier_stop,
+                            summarize_portfolio_atr)
 from config import ATR_PERIOD
 
 HH_WINDOW = 20
@@ -172,6 +173,43 @@ def test_provider_pre_open_partial_bar_survives_the_collector_and_the_calculator
     assert frame.index[-1].date().isoformat() == "2026-09-29"
     assert atr_input_issue(frame) is None
     assert calc_chandelier_stop("005930.KS", frame) is not None
+
+
+# 포트폴리오 요약(주간 리포트·종가 요약 스파이크 집계)도 Stop 과 같은 확정 봉 계약을 따른다.
+# 원본 프레임으로 ATR 을 계산하던 동안에는 미확정 마지막 봉 종목이 요약에서 조용히 빠졌다.
+UNCONFIRMED_LAST_BAR = {
+    "inconsistent": lambda frame: break_row(frame, -1, above=True),
+    "partial": lambda frame: blank_high_low(frame, -1),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(UNCONFIRMED_LAST_BAR))
+def test_portfolio_summary_keeps_a_symbol_whose_last_bar_is_unconfirmed(shape):
+    frame = UNCONFIRMED_LAST_BAR[shape](bars())
+    original = frame.copy(deep=True)
+    confirmed = frame.iloc[:-1]
+
+    summary = summarize_portfolio_atr({"005930.KS": frame, "AAPL": bars()})
+
+    assert sorted(summary["Symbol"]) == ["005930.KS", "AAPL"]
+    row = summary.set_index("Symbol").loc["005930.KS"]
+    stop = calc_chandelier_stop("005930.KS", frame)
+    # ATR·ATR% 는 확정 봉까지, 현재가는 원본 마지막 봉 — Stop 계산과 같은 값이어야 한다.
+    assert row["ATR"] == pytest.approx(round(float(calc_atr(confirmed).iloc[-1]), 4))
+    assert row["ATR%"] == pytest.approx(round(float(calc_atr_pct(confirmed).iloc[-1]), 2))
+    assert row["Close"] == pytest.approx(round(float(frame["Close"].iloc[-1]), 4))
+    assert row["StopLevel"] == pytest.approx(round(stop.stop_level, 4))
+    pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize("shape", sorted(UNCONFIRMED_LAST_BAR))
+def test_portfolio_summary_still_excludes_symbols_with_broken_history(shape):
+    frame = UNCONFIRMED_LAST_BAR[shape](bars())
+    frame = blank_high_low(frame, 5)
+
+    summary = summarize_portfolio_atr({"005930.KS": frame, "AAPL": bars()})
+
+    assert list(summary["Symbol"]) == ["AAPL"]
 
 
 def test_other_input_failures_keep_their_own_reason_codes():

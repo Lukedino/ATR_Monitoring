@@ -112,6 +112,16 @@ missing Close, and missing values in any earlier row are still rejected as
 `non_finite_prices`. `current_close` still comes from the raw final row. Covered
 by `tests/test_unconfirmed_bar.py`.
 
-`summarize_portfolio_atr()` still computes from the raw frame, so a symbol with an
-unconfirmed last bar is left out of the portfolio summary, as it has been for
-relation errors since 2026-09-23.
+### Portfolio summary follows the same contract — 2026-09-29
+
+`summarize_portfolio_atr()` passed `atr_input_issue()` but then computed ATR and
+ATR% from the raw frame. For a symbol with an unconfirmed last bar that series is
+empty, so the symbol was silently left out of the weekly report and the spike
+count in the closing brief. This applied to relation errors since 2026-09-23 and
+to partial bars from the change above.
+
+The summary now computes ATR, ATR%, ATR_Avg20 and the spike flag from
+`_confirmed_frame()`, the same frame the stop uses. `Close` stays the raw final
+Close, matching `current_close`. Symbols with broken earlier history are still
+excluded. Covered by `tests/test_unconfirmed_bar.py`; the alert chart for a
+partial bar is covered by `tests/test_chart_unconfirmed_bar.py`.

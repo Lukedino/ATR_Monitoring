@@ -485,10 +485,12 @@ def summarize_portfolio_atr(
             continue
 
         try:
-            atr_series  = calc_atr(df, period)
-            atr_pct_ser = calc_atr_pct(df, period)
+            # Stop 계산과 같은 확정 봉 계약. 원본으로 계산하면 미확정 마지막 봉 종목이 요약에서 빠진다.
+            frame       = _confirmed_frame(df)
+            atr_series  = calc_atr(frame, period)
+            atr_pct_ser = calc_atr_pct(frame, period)
 
-            if not _has_current_atr(atr_series, df.index) or not _has_current_atr(atr_pct_ser, df.index):
+            if not _has_current_atr(atr_series, frame.index) or not _has_current_atr(atr_pct_ser, frame.index):
                 continue
             latest_close   = float(df["Close"].iloc[-1])
             latest_atr     = float(atr_series.iloc[-1])

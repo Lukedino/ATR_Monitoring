@@ -51,6 +51,21 @@ def test_chart_renders_when_only_the_last_bar_is_unconfirmed(above):
     pd.testing.assert_frame_equal(frame, original)
 
 
+def test_chart_renders_when_the_last_bar_lacks_high_low(monkeypatch):
+    """KR 개장 전 부분 봉(수집기가 High/Low=0 을 NaN 으로 바꾼 봉)도 알림 차트가 나간다."""
+    frame = bars()
+    frame.loc[frame.index[-1], ["Open", "High", "Low"]] = np.nan
+    assert calc_chandelier_stop(SYMBOL, frame) is not None   # 알림이 나가는 조건
+    sent = []
+    monkeypatch.setattr(monitor.tg, "send_photo",
+                        lambda image, caption="": sent.append((image, caption)) or True)
+
+    monitor._send_chart_quietly(SYMBOL, frame, None, "synthetic")
+
+    assert len(sent) == 1
+    assert sent[0][0][:8] == b"\x89PNG\r\n\x1a\n"
+
+
 def test_stop_trail_comes_from_confirmed_history():
     frame = break_last(bars(), above=True)
 
