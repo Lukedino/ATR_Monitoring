@@ -89,3 +89,29 @@ The chart now draws its indicators (ATR, ATR%, stop trail, 21-day EMA) from
 `_confirmed_frame()`, aligned to the raw index, so they end at the last confirmed
 bar. The price line keeps the raw final Close, which is the price the alert is
 about. Covered by `tests/test_chart_unconfirmed_bar.py`.
+
+### Partial bars without High/Low — 2026-09-29
+
+Runs 36361172756 (2026-09-28 00:10Z) and 36463274040 (18:10Z) each rejected 23 of
+77 symbols with `non_finite_prices` and exited 1. The rejected block was the
+Korean holdings, on the first session after the Chuseok break; every run between
+2026-09-22 and 2026-09-27 at the same slots succeeded.
+
+Before the KR open the provider can return a bar with Open/High/Low = 0 and Close
+= the previous close (recorded in `3ca1f53`, 2026-03-20). The collector turns
+those zeros into NaN so that no gap of -100% reaches the triggers. Before the
+2026-09-22 hardening the calculator tolerated the NaN; the hardened validator
+rejects any non-finite H/L/C, so the whole symbol failed. Feeding both observed
+shapes (a next-day partial bar, and a partial bar that replaced the last session)
+through `fetch_ohlcv()` reproduces the rejection on the current code and a
+successful stop on `bf87e65`.
+
+`_confirmed_frame()` now also drops the final bar when its Close is a finite
+positive number and only its High and/or Low are missing. Infinite values, a
+missing Close, and missing values in any earlier row are still rejected as
+`non_finite_prices`. `current_close` still comes from the raw final row. Covered
+by `tests/test_unconfirmed_bar.py`.
+
+`summarize_portfolio_atr()` still computes from the raw frame, so a symbol with an
+unconfirmed last bar is left out of the portfolio summary, as it has been for
+relation errors since 2026-09-23.

@@ -43,6 +43,14 @@ def _validated_price_frame(df: pd.DataFrame, min_rows: int = 1):
     return validate_price_frame(df, min_rows)
 
 
+def _is_partial_bar(row: pd.Series) -> bool:
+    """Close 는 유효한 양수이고 High/Low 만 비어 있는(NaN) 봉인지."""
+    high_low = pd.to_numeric(row[["High", "Low"]], errors="coerce").astype(float)
+    close = pd.to_numeric(pd.Series([row["Close"]]), errors="coerce").astype(float).iloc[0]
+    return bool(high_low.isna().any() and not np.isinf(high_low).any() and
+                np.isfinite(close) and close > 0)
+
+
 def _confirmed_frame(df: pd.DataFrame) -> pd.DataFrame:
     """진행 중인 봉을 뺀 확정 이력을 돌려준다. 원본은 바꾸지 않는다.
 
@@ -55,10 +63,17 @@ def _confirmed_frame(df: pd.DataFrame) -> pd.DataFrame:
     그래서 모순이 **마지막 행에만** 있으면 그 미확정 봉을 빼고 확정된 이력으로 계산한다.
     과거 행에 모순이 있으면 공급자 자료 오류이므로 잘라내지 않고 기존대로 거절시킨다.
     가격을 고치거나 행을 채워 넣지 않으며, 허용 오차·기간·배수도 그대로다.
+
+    High/Low 만 빈 부분 봉도 같은 규칙이다. KR 개장 전 공급자는 Open/High/Low=0·Close=전일
+    종가인 봉을 주고 수집기가 그 0 을 NaN 으로 바꾼다. 2026-09-28 추석 연휴 뒤 이 봉 하나
+    때문에 국내 23종목이 전부 거절됐다(00:10Z·18:10Z). ±inf 나 Close 결측은 부분 봉이 아니라
+    자료 오류이므로 기존대로 거절한다.
     """
     if not isinstance(df, pd.DataFrame) or len(df) < 2:
         return df
-    if validate_price_frame(df)[1] != "inconsistent_prices":
+    issue = validate_price_frame(df)[1]
+    if not (issue == "inconsistent_prices" or
+            (issue == "non_finite_prices" and _is_partial_bar(df.iloc[-1]))):
         return df
     trimmed = df.iloc[:-1]
     return trimmed if validate_price_frame(trimmed)[1] is None else df

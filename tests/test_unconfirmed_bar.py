@@ -102,6 +102,78 @@ def test_single_inconsistent_bar_is_not_silently_accepted():
     assert calc_chandelier_stop("AAPL", frame) is None
 
 
+def blank_high_low(frame, position):
+    """수집기가 공급자의 High/Low=0 을 NaN 으로 바꾼 부분 봉 모양을 만든다."""
+    frame = frame.copy()
+    label = frame.index[position]
+    frame.loc[label, ["Open", "High", "Low"]] = np.nan
+    return frame
+
+
+# 2026-09-28 00:10Z·18:10Z 실행: 추석 연휴 뒤 국내 23종목이 전부 `non_finite_prices` 로 거절됐다.
+# 공급자가 개장 전 Open/High/Low=0·Close=전일 종가인 부분 봉을 주고(3ca1f53), 수집기가 그 0 을
+# NaN 으로 바꾼다. 마지막 봉 하나의 결측이므로 관계 모순과 같은 미확정 봉 계약을 따른다.
+def test_partial_last_bar_without_high_low_no_longer_blocks_the_calculation():
+    frame = blank_high_low(bars(), -1)
+    original = frame.copy(deep=True)
+    confirmed = frame.iloc[:-1]
+
+    assert atr_input_issue(frame) is None
+    result = calc_chandelier_stop("005930.KS", frame)
+
+    assert result is not None
+    assert result.highest_high == pytest.approx(
+        round(float(confirmed["High"].iloc[-HH_WINDOW:].max()), 4))
+    assert result.current_close == pytest.approx(round(float(frame["Close"].iloc[-1]), 4))
+    pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize("positions", [(5,), (5, -1), (0,), (-2,)])
+def test_missing_prices_outside_the_last_bar_are_still_rejected(positions):
+    frame = bars()
+    for position in positions:
+        frame = blank_high_low(frame, position)
+
+    assert atr_input_issue(frame) == "non_finite_prices"
+    assert calc_chandelier_stop("005930.KS", frame) is None
+
+
+def test_partial_last_bar_without_a_close_is_not_accepted():
+    frame = bars()
+    frame.loc[frame.index[-1], ["High", "Low", "Close"]] = np.nan
+
+    assert calc_chandelier_stop("005930.KS", frame) is None
+
+
+def test_provider_pre_open_partial_bar_survives_the_collector_and_the_calculator(monkeypatch):
+    """수집기의 0→NaN 변환과 계산기의 결측 거절이 만나는 실제 경로를 합성 응답으로 고정한다."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    import data_collector as collector
+
+    index = pd.bdate_range(end="2026-09-28", periods=60, tz="Asia/Seoul")
+    provider = pd.DataFrame({"Open": 100.0, "High": 110.0, "Low": 90.0, "Close": 100.0,
+                             "Volume": 1000.0, "Dividends": 0.0, "Stock Splits": 0.0}, index=index)
+    partial = pd.DataFrame({"Open": 0.0, "High": 0.0, "Low": 0.0, "Close": 100.0,
+                            "Volume": 0.0, "Dividends": 0.0, "Stock Splits": 0.0},
+                           index=pd.DatetimeIndex([pd.Timestamp("2026-09-29", tz="Asia/Seoul")]))
+    provider = pd.concat([provider, partial])
+
+    ticker = SimpleNamespace(history=lambda **kwargs: provider.copy(deep=True),
+                             get_history_metadata=lambda: {},
+                             fast_info=SimpleNamespace(last_price=100.0))
+    monkeypatch.setattr(collector.yf, "Ticker", lambda symbol: ticker)
+    monkeypatch.setattr(collector, "_fetch_naver_kr_price", lambda code: None)
+
+    frame = collector.fetch_ohlcv(
+        "005930.KS", now_utc=datetime.fromisoformat("2026-09-28T18:10:00+00:00"))
+
+    assert frame.index[-1].date().isoformat() == "2026-09-29"
+    assert atr_input_issue(frame) is None
+    assert calc_chandelier_stop("005930.KS", frame) is not None
+
+
 def test_other_input_failures_keep_their_own_reason_codes():
     empty = pd.DataFrame(columns=["High", "Low", "Close"])
     assert atr_input_issue(empty) == "empty_input"

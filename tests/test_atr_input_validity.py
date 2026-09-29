@@ -26,6 +26,8 @@ def bars(rows=80):
     ("synthetic-invalid", "non_numeric_prices"), (True, "non_numeric_prices"),
 ])
 def test_invalid_price_at_any_history_position_cannot_produce_a_stop(position, column, invalid, reason):
+    if position == 79 and column in ("High", "Low") and (invalid is None or invalid != invalid):
+        pytest.skip("마지막 봉의 High/Low 결측은 미확정 부분 봉 계약 — tests/test_unconfirmed_bar.py")
     frame = bars().astype(object)
     frame.iloc[position, frame.columns.get_loc(column)] = invalid
     original = frame.copy(deep=True)
