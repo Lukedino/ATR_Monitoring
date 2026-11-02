@@ -37,6 +37,16 @@ jobs:
             requirements.txt
             requirements-dev.txt
             constraints.txt
+      # 러너 기본 Python 의 pipx 가 고정 버전과 충돌해 pip check 가 실패한다 — 전용 환경에서 검사한다
+      - name: Create clean environment
+        shell: bash
+        run: |
+          python -I -m venv "$RUNNER_TEMP/atr-venv"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "$RUNNER_TEMP/atr-venv/Scripts" >> "$GITHUB_PATH"
+          else
+            echo "$RUNNER_TEMP/atr-venv/bin" >> "$GITHUB_PATH"
+          fi
       - name: Install test dependencies
         run: 'python -m pip install -r requirements-dev.txt -c constraints.txt --only-binary=:all:'
       - name: Check installed dependency compatibility
