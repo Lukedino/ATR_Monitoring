@@ -94,7 +94,7 @@ python monitor.py --list-pos         # 그 밖의 CLI 옵션은 monitor.py 상�
 
 **B. 워크플로** — `.github/workflows/atr_monitor.yml`
 - `permissions` 최소화 유지 여부, 액션이 태그(`@v4`·`@v5`) 고정이고 SHA 고정이 아닌 점, `${{ inputs.job }}` 을 `run:` 셸에 직접 보간하는 점(choice 타입이지만 API dispatch 경로 포함해 검토).
-- 낡은 주석: 45행 "push 하기 위한 쓰기 권한", 104행의 본문 없는 6단계 제목, `monitor.py:16-29,430-433` docstring 의 옛 스케줄 서술. job 에 `timeout-minutes` 미설정.
+- 낡은 주석: 45행 "push 하기 위한 쓰기 권한", 104행의 본문 없는 6단계 제목, `monitor.py:16-29,430-433` docstring 의 옛 스케줄 서술.
 
 **C. 시간대·DST** — `market_hours.py`, `stop_manager.py`, `dispatcher_schedules.py`
 - `stop_manager.py:73,344,392` 는 naive `datetime.now()` 를 쓴다. GHA 러너에서는 UTC 이므로 `alert_log` 의 "새 거래일" 경계가 어느 시장의 지역 날짜와도 다르다 — 창의 멱등 키와 기준이 불일치한다.
@@ -102,12 +102,10 @@ python monitor.py --list-pos         # 그 밖의 CLI 옵션은 monitor.py 상�
 - 휴장일 달력이 없다 — 게이트·창 모두 요일만 본다.
 
 **D. 상태 파일 경쟁·부분 실패** — `stop_manager.py:80-90`, `drive_state.py`, `monitor.py:452-473`
-- `_save_raw` 는 원자적 쓰기가 아니고, 모든 함수가 매번 파일 전체를 읽고 쓴다. push 는 조건부 갱신(ETag/세대 확인) 없이 마지막 쓰기가 이긴다 — 직렬화는 워크플로 `concurrency` 하나에만 의존하며 로컬 CLI(`--add-pos`)와 GHA 가 동시에 쓰면 보호 장치가 없다.
+- 모든 함수가 매번 파일 전체를 읽고 쓴다. push 는 조건부 갱신(ETag/세대 확인) 없이 마지막 쓰기가 이긴다 — 직렬화는 워크플로 `concurrency` 하나에만 의존하며 로컬 CLI(`--add-pos`)와 GHA 가 동시에 쓰면 보호 장치가 없다.
 - `mark_window_done` 후 push 실패 시: 알림은 나갔는데 완료 기록이 유실 → 다음 실행에서 중복 발송. 반대로 아래 E 의 경우 미발송인데 완료로 기록된다.
-- `config.py:189-210`: GHA 에서 Drive 포트폴리오 로드가 실패하면 **조용히 fallback 심볼로 계속 실행**된다(경고 로그뿐, 텔레그램 알림 없음). 상태 파일의 fail-closed 와 정책이 다르다.
 
 **E. 알림 누락 경로** — `monitor.py`, `telegram_bot.py`
-- `tg.send_message()` 는 실패 시 `False` 를 돌려주지만 호출부가 반환값을 보지 않는다. `monitor.py:163-166,323-326` 은 전송 실패여도 `mark_trigger_sent` 로 기록해 같은 조건의 재알림이 막히고, `monitor.py:364,423` 은 종가 요약 전송이 실패해도 창을 완료로 적는다.
 - `monitor.py:400-404`: 전 종목 stop_check 예외는 로그만 남긴다(텔레그램 알림 없음, 종료 코드 0). 주간 리포트 창만 열려 있던 실행이라면 외부에서 실패를 알 방법이 없다.
 - 종목 루프 중간의 예외 하나가 나머지 종목 체크를 전부 중단시키는지(`job_stop_check` 루프에 종목 단위 try 없음).
 - `send_message` 는 429 재시도가 없고(`send_photo` 만 있음), `send_long_message` 분할 중 일부 실패를 알리지 않는다.
