@@ -86,17 +86,17 @@ def test_telegram_module_never_uses_naive_server_clock():
 
 # ── 즉각 대응 ───────────────────────────────────────────────────────────
 def test_trigger_alert_keeps_classic_layout_with_readable_text():
-    # 사용자 선호(2026-11-14): 예전 틀(🚨·구분선 3개·괄호 설명·행동 줄·📅)을 유지
+    # 사용자 선호(2026-11-14): 예전 틀(구분선 3개·괄호 설명·행동 줄·📅)을 유지, 첫 줄은 상황 — 종목
     text = tg.fmt_trigger_alert(KR, ["STOP NEAR 1.2% (Stop=57,400.00)", "VOLUME x2.3 (평균 대비 230%)"],
                                 58100.0, 57400.0)
     lines = text.split("\n")
-    assert lines[0] == "🚨 <b>[ATR] 즉각 대응 트리거 감지</b>"
+    assert lines[0] == "🔴 <b>[ATR] 손절선 근접 — 가상전자</b>"
     assert lines[1] == lines[6] == lines[9] == "━━━━━━━━━━━━━━━━"
     assert lines[2] == "<b>가상전자</b> · 999990.KS"
     assert lines[3] == "대상: 가상계좌"
     assert lines[4] == "현재가: 58,100원"
     assert "손절선: 57,400원 (거리 1.2%)" in lines
-    assert "  • 손절선 근접 1.2%" in lines and "  • 거래량 2.3배 (20일 평균 대비)" in lines
+    assert "  ⚠️ 손절선 근접 1.2%" in lines and "  📊 거래량 2.3배 (20일 평균 대비)" in lines
     assert lines[-2] == "🔴 <b>매도 준비!</b> 손절선 도달 임박 — 손절 기준 재확인"
     assert lines[-1] == "📅 11/13(금) 16:28"
     for banned in ("STOP NEAR", "VOLUME", "57,400.00", " | ", "x2.3"):
@@ -134,6 +134,27 @@ def test_action_line_matches_trigger_kind():
     assert up[-2].startswith("📈 <b>손절선 상향 검토!</b>")
     assert vol[-2].startswith("🔍 <b>ATR 확인</b>")
     assert down[-2].startswith("🔻 <b>손실 관리!</b>")
+
+
+@pytest.mark.parametrize("triggers,first_line,marks", [
+    (["SURGE DOWN -7.2% (손실 확대 경보)", "GAP DOWN -4.4% (Stop 즉시 이탈 위험)"],
+     "🔻 <b>[ATR] 하락 — SYN</b>", ["🔻", "🔻"]),
+    (["SURGE +5.3% (Highest High 갱신)", "VOLUME x3.1 (평균 대비 310%)"],
+     "📈 <b>[ATR] 상승 — SYN</b>", ["🔺", "📊"]),
+    (["GAP UP +3.2%", "SURGE DOWN -6.0% (손실 확대 경보)"],
+     "🔻 <b>[ATR] 하락 — SYN</b>", ["🔺", "🔻"]),
+    (["STOP NEAR 1.2% (Stop=99.00)", "SURGE DOWN -6.0% (손실 확대 경보)"],
+     "🔴 <b>[ATR] 하락 · 손절선 근접 — SYN</b>", ["⚠️", "🔻"]),
+    (["STOP BREACH 1.0% 하회 (Stop=101.00) — 손절선 이탈"],
+     "🛑 <b>[ATR] 손절선 이탈 — SYN</b>", ["⚠️"]),
+    (["VOLUME x3.1 (평균 대비 310%)"], "🔍 <b>[ATR] 거래량 급증 — SYN</b>", ["📊"]),
+])
+def test_first_line_tells_direction_and_items_are_marked(triggers, first_line, marks):
+    # 2026-11-14 사용자 요청: 알림 미리보기(첫 줄)만 보고 상승·하락을 판단할 수 있게
+    lines = tg.fmt_trigger_alert("SYN", triggers, 100.0, None).split("\n")
+    assert lines[0] == first_line
+    items = [line.strip() for line in lines if line.startswith("  ")]
+    assert [item.split(" ", 1)[0] for item in items] == marks
 
 
 # ── 그 밖의 메시지 ─────────────────────────────────────────────────────

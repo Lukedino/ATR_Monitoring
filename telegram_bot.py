@@ -512,6 +512,19 @@ def trigger_label(trigger: str) -> str:
     return trigger
 
 
+def _trigger_mark(trigger: str) -> str:
+    """감지 항목 앞 기호 — 🔻 하락 · 🔺 상승 · 📊 거래량 · ⚠️ 손절선. 판정은 원문 접두로만."""
+    if trigger.startswith(("SURGE DOWN", "GAP DOWN")):
+        return "🔻"
+    if trigger.startswith(("SURGE +", "GAP UP")):
+        return "🔺"
+    if trigger.startswith("VOLUME"):
+        return "📊"
+    if trigger.startswith("STOP"):
+        return "⚠️"
+    return "•"
+
+
 def fmt_trigger_alert(symbol: str, triggers: list[str], close: float, stop: float | None) -> str:
     """즉각 대응 트리거 감지 긴급 알림.
 
@@ -526,27 +539,29 @@ def fmt_trigger_alert(symbol: str, triggers: list[str], close: float, stop: floa
     has_breach    = any(t.startswith("STOP BREACH") for t in triggers)
     has_mismatch  = any(t.startswith("STOP MISMATCH") for t in triggers)
 
+    # kind = 첫 줄에 쓰는 상황 이름 — 알림 미리보기(첫 줄)만 보고 방향·종목을 판단하게 한다(2026-11-14).
     if has_mismatch:
-        emoji, head, rest = "🛠", "등록 손절선 점검!", "현재가와 단위가 맞지 않습니다(액면분할 등) — 손절선 재등록 필요"
+        emoji, kind, head, rest = "🛠", "손절선 점검", "등록 손절선 점검!", "현재가와 단위가 맞지 않습니다(액면분할 등) — 손절선 재등록 필요"
     elif has_breach:
-        emoji, head, rest = "🛑", "손절선 이탈!", "종가가 등록 손절선 아래 — 증권사 지정가 체결 여부 확인, 미체결이면 손절 실행"
+        emoji, kind, head, rest = "🛑", "손절선 이탈", "손절선 이탈!", "종가가 등록 손절선 아래 — 증권사 지정가 체결 여부 확인, 미체결이면 손절 실행"
     elif has_stop and has_down:
-        emoji, head, rest = "🔴", "즉각 손절 검토!", "손절선 근접 + 추가 하락 — 포지션 축소 우선"
+        emoji, kind, head, rest = "🔴", "하락 · 손절선 근접", "즉각 손절 검토!", "손절선 근접 + 추가 하락 — 포지션 축소 우선"
     elif has_stop:
-        emoji, head, rest = "🔴", "매도 준비!", "손절선 도달 임박 — 손절 기준 재확인"
+        emoji, kind, head, rest = "🔴", "손절선 근접", "매도 준비!", "손절선 도달 임박 — 손절 기준 재확인"
     elif has_down:
-        emoji, head, rest = "🔻", "손실 관리!", "급락·갭 하락 감지 — 손절선 이탈 여부 즉시 확인"
+        emoji, kind, head, rest = "🔻", "하락", "손실 관리!", "급락·갭 하락 감지 — 손절선 이탈 여부 즉시 확인"
     elif has_up:
-        emoji, head, rest = "📈", "손절선 상향 검토!", "가격 상승에 맞춰 손절선 재계산"
+        emoji, kind, head, rest = "📈", "상승", "손절선 상향 검토!", "가격 상승에 맞춰 손절선 재계산"
     else:  # VOLUME 등
-        emoji, head, rest = "🔍", "ATR 확인", "거래량 급증 감지 — 추가 변동성 주의"
+        emoji, kind, head, rest = "🔍", "거래량 급증", "ATR 확인", "거래량 급증 감지 — 추가 변동성 주의"
 
     name = _name(symbol).split(" | ")[0].strip()
     title = f"<b>{esc(name)}</b>" if name and name != symbol else f"<b>{esc(symbol)}</b>"
     if name and name != symbol:
         title += f" · {esc(symbol)}"
     divider = "━━━━━━━━━━━━━━━━"
-    lines = [f"🚨 <b>{SOURCE} 즉각 대응 트리거 감지</b>", divider, title]
+    display = name if name and name != symbol else symbol
+    lines = [f"{emoji} <b>{SOURCE} {esc(kind)} — {esc(display)}</b>", divider, title]
     accounts = _accounts(symbol)
     if accounts:
         lines.append(f"대상: {esc(accounts)}")
@@ -554,7 +569,7 @@ def fmt_trigger_alert(symbol: str, triggers: list[str], close: float, stop: floa
     if stop and stop > 0:
         dist_pct = abs(close - stop) / stop * 100
         lines.append(f"손절선: {fmt_price(symbol, stop)} (거리 {dist_pct:.1f}%)")
-    lines += [divider, *[f"  • {esc(trigger_label(t))}" for t in triggers], divider,
+    lines += [divider, *[f"  {_trigger_mark(t)} {esc(trigger_label(t))}" for t in triggers], divider,
               f"{emoji} <b>{esc(head)}</b> {esc(rest)}",
               f"📅 {fmt_kst()}"]
     return "\n".join(lines)
