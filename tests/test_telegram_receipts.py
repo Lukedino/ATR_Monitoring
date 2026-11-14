@@ -77,14 +77,15 @@ def test_ok_true_requires_no_additional_message_schema(transport, method):
     assert calls[0]["timeout"] == telegram.TIMEOUT_SEC == 20
 
 
-def test_markdown_400_fallback_keeps_payload_and_attempt_policy(transport):
+def test_html_400_fallback_resends_plain_text_once(transport):
     install, calls, sleeps = transport
     install([response(400, {"description": PRIVATE}), response(payload={"ok": True})])
-    assert telegram.send_message("*synthetic*_text`") is True
+    assert telegram.send_message("<b>synthetic</b> &amp; &lt;text&gt;") is True
     assert len(calls) == 2 and sleeps == []
-    assert calls[0]["json"]["parse_mode"] == "Markdown"
+    assert calls[0]["json"]["parse_mode"] == "HTML"
     assert "parse_mode" not in calls[1]["json"]
-    assert calls[1]["json"]["text"] == "synthetictext"
+    assert calls[1]["json"]["text"] == "synthetic & <text>"
+    assert all(call["json"]["link_preview_options"] == {"is_disabled": True} for call in calls)
 
 
 def test_existing_text_rate_limit_wait_cap_and_three_attempt_limit(transport):
@@ -114,7 +115,7 @@ def test_malformed_photo_429_is_sanitized_failure(transport, caplog, raw):
 def test_long_message_retains_any_failed_chunk(transport):
     install, calls, sleeps = transport
     install([response(payload={"ok": False}), response(payload={"ok": True})])
-    assert telegram.send_long_message("a" * 2000 + "\n" + "b" * 2000) is False
+    assert telegram.send_long_message("a" * 3000 + "\n" + "b" * 3000) is False
     assert len(calls) == 2 and sleeps == []
 
 

@@ -67,9 +67,11 @@ def test_notice_is_fixed_text_and_reads_a_bounded_response(capsys):
     assert request.full_url == "https://api.telegram.org/bot123456:synthetic_bot_token/sendMessage"
     assert timeout == 10
     fields = urllib.parse.parse_qs(request.data.decode("utf-8"))
-    assert set(fields) == {"chat_id", "text"}
+    assert set(fields) == {"chat_id", "text", "parse_mode", "link_preview_options"}
+    assert fields["parse_mode"] == ["HTML"]
+    assert fields["link_preview_options"] == ['{"is_disabled": true}']
     assert fields["chat_id"] == ["synthetic_chat"]
-    assert "실행 번호: 123456789" in fields["text"][0]
+    assert "실행 번호: <code>123456789</code>" in fields["text"][0]
     for sensitive in ("synthetic_bot_token", "SYM-PRIVATE", "synthetic_private_group", "synthetic_private_credentials"):
         assert sensitive not in fields["text"][0]
     assert opener.response.read_limits == [notice.MAX_RESPONSE_BYTES + 1]
@@ -157,4 +159,4 @@ def test_helper_remains_independent_of_config_and_runtime_dependencies():
             imports.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             imports.add(node.module.split(".")[0])
-    assert imports <= {"json", "os", "re", "urllib"}
+    assert imports <= {"datetime", "json", "os", "re", "urllib"}

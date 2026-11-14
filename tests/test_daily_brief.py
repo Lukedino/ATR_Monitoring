@@ -6,7 +6,7 @@
 
 2026-09-21 소유자 결정: 이탈·근접 종목은 **전부** 나열한다. "… 외 28개" 로 접으면 어느 종목을
 손봐야 하는지 알 수 없어 요약의 쓸모가 없다. 여유 종목은 여전히 개수만 — 할 일이 없는 종목이다.
-길어지면 send_long_message 가 줄 단위로 나눠 보낸다.
+길어지면 send_long_message 가 섹션·줄 단위로 나눠 보낸다.
 
 같은 날 찾은 회귀: 09-15 에 stop_check 을 전 종목으로 넓히면서 요약도 전 종목 결과를 그대로
 받아, "KR 종가 요약" 에 미국 종목이 섞였다. 요약은 창의 시장 종목만 센다. 크립토는 전용 종가 창이
@@ -99,21 +99,21 @@ def test_clean_day_omits_empty_lines():
 def test_spike_and_update_counts_are_shown():
     out = tg.fmt_daily_brief("US 종가 요약", "2026-09-14", [SAFE],
                              spike_count=2, updated_count=4)
-    assert "스파이크 2" in out
-    assert "Stop 갱신 4" in out
+    assert "변동성 급증 2" in out
+    assert "손절선 갱신 4" in out
 
 
 def test_zero_counts_are_omitted():
     out = tg.fmt_daily_brief("US 종가 요약", "2026-09-14", [SAFE],
                              spike_count=0, updated_count=0)
-    assert "스파이크" not in out
-    assert "Stop 갱신" not in out
+    assert "변동성 급증" not in out
+    assert "손절선 갱신" not in out
 
 
 def test_title_and_data_date_appear():
     out = tg.fmt_daily_brief("KR 종가 요약", "2026-09-14", [SAFE])
     assert "KR 종가 요약" in out
-    assert "2026-09-14" in out
+    assert "09/14(월)" in out          # 공통 양식: MM/DD(요일)
 
 
 def test_empty_result_list_is_handled():
@@ -164,13 +164,13 @@ def test_kr_brief_excludes_us_holdings(monkeypatch):
     assert "보유 1종목" in out
     assert "  • 999991 (KS)" in out
     assert "AAPL" not in out and "NVDA" not in out and "BTC-USD" not in out
-    assert "스파이크" not in out and "Stop 갱신" not in out   # 둘 다 미국 종목 몫
+    assert "변동성 급증" not in out and "손절선 갱신" not in out   # 둘 다 미국 종목 몫
 
 
 def test_kr_brief_uses_the_kr_data_date(monkeypatch):
     """전 종목 최빈값을 쓰면 미국 종목이 많은 날 KR 요약에 미국 거래일이 찍힌다."""
     out = "\n".join(_send_brief(monkeypatch, "KR"))
-    assert "2026-09-21" in out and "2026-09-18" not in out
+    assert "09/21(월)" in out and "09/18(금)" not in out
 
 
 def test_us_brief_carries_crypto_and_excludes_kr_holdings(monkeypatch):
@@ -179,7 +179,7 @@ def test_us_brief_carries_crypto_and_excludes_kr_holdings(monkeypatch):
     assert "보유 4종목" in out
     assert "  • BTC-USD" in out
     assert "999991" not in out
-    assert "스파이크 1" in out and "Stop 갱신 1" in out
+    assert "변동성 급증 1" in out and "손절선 갱신 1" in out
 
 
 def test_every_holding_lands_in_exactly_one_brief():
@@ -205,7 +205,7 @@ def test_brief_send_failure_still_raises(monkeypatch):
 def test_long_message_reports_a_failed_chunk(monkeypatch):
     results = iter([True, False, True])
     monkeypatch.setattr(tg, "send_message", lambda text, parse_mode="Markdown": next(results))
-    text = "\n".join("x" * 100 for _ in range(60))        # 6000자 → 3조각
+    text = "\n".join("x" * 100 for _ in range(100))       # 10,099자 → 3조각(4,096자 상한)
     assert tg.send_long_message(text) is False
 
 

@@ -48,6 +48,7 @@ from config import (
     KR_REPORT_TIME,
     US_REPORT_TIME,
     ATR_PERIOD,
+    fmt_price,
     fmt_symbol,
 )
 from data_collector import fetch_portfolio, fetch_ohlcv
@@ -74,6 +75,14 @@ from stop_manager import (
     mark_window_done,
 )
 import telegram_bot as tg
+# 서식 헬퍼는 직접 가져온다 — 테스트가 monitor.tg 를 가짜로 바꿔도 메시지 모양은 실제 것을 쓴다.
+from telegram_bot import (
+    esc as _esc,
+    explain_state_sync_error,
+    fmt_chart_caption,
+    fmt_ops_alert,
+    fmt_run_problems,
+)
 import market_hours
 from dataclasses import dataclass
 
@@ -217,7 +226,7 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
                         if tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop)):
                             mark_trigger_sent(symbol, trigger.triggers, close, current_stop)
                             _send_chart_quietly(symbol, df, current_stop,
-                                                f"긴급: {fmt_symbol(symbol)} 트리거 감지")
+                                                fmt_chart_caption(symbol, "즉각 대응"))
                             logger.warning("트리거 감지 알림: %s — %s", symbol, trigger.triggers)
                         else:
                             unsent += 1
@@ -236,8 +245,8 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
                 if tg.send_message(tg.fmt_stop_update(pending)):
                     result = update_stop(**stop_args)
                     updated_symbols.append(symbol)
-                    _send_chart_quietly(symbol, df, result.new_stop,
-                                        f"{symbol} Stop 갱신: {result.prev_stop:,.2f} -> {result.new_stop:,.2f}")
+                    _send_chart_quietly(symbol, df, result.new_stop, fmt_chart_caption(
+                        symbol, f"손절선 {fmt_price(symbol, result.prev_stop)} → {fmt_price(symbol, result.new_stop)}"))
                     logger.info("Stop 갱신 알림 전송: %s", symbol)
                 else:
                     unsent += 1
@@ -336,7 +345,7 @@ def _run_daily_report(symbols: list[str], title: str) -> None:
     # 차트 실패가 이미 전달한 필수 본문을 실패로 바꾸거나 뒤 차트를 막지 않게 한다.
     try:
         bar_chart = plot_portfolio_atr_bar(summary, as_bytes=True)
-        if not tg.send_photo(bar_chart, caption="ATR% 비교"):
+        if not tg.send_photo(bar_chart, caption="📊 <b>ATR% 비교</b>"):
             logger.warning("리포트 바차트 전송 실패 — 필수 본문은 이미 나갔다")
     except Exception as exc:
         logger.warning("리포트 바차트 실패 — 필수 본문은 이미 나갔다 (%s)", type(exc).__name__)
@@ -357,7 +366,7 @@ def _run_daily_report(symbols: list[str], title: str) -> None:
         if symbol not in chart_targets or df.empty:
             continue
         rec   = stop_recs.get(symbol)
-        _send_chart_quietly(symbol, df, rec.current_stop if rec else None, fmt_symbol(symbol))
+        _send_chart_quietly(symbol, df, rec.current_stop if rec else None, fmt_chart_caption(symbol))
         time.sleep(4)   # Telegram rate limit 방지 (분당 15장 ≈ 안전 한도)
 
     logger.info("%s 완료", title)
@@ -365,14 +374,14 @@ def _run_daily_report(symbols: list[str], title: str) -> None:
 
 def job_kr_daily_report() -> None:
     """[KST 금요일 18:00] 국내 종목 ATR 주간 리포트."""
-    _run_daily_report(KR_SYMBOLS, "📈 국내 포트폴리오 ATR 주간 리포트")
+    _run_daily_report(KR_SYMBOLS, "국내 ATR 주간 리포트")
 
 
 def job_us_daily_report() -> None:
     """[KST 토요일 08:00] 미국+크립토 ATR 주간 리포트."""
     _run_daily_report(
         US_SYMBOLS + CRYPTO_SYMBOLS,
-        "🌎 미국/크립토 포트폴리오 ATR 주간 리포트",
+        "미국·크립토 ATR 주간 리포트",
     )
 
 
@@ -403,7 +412,7 @@ def job_trigger_check() -> None:
                 found = True
                 if tg.send_message(tg.fmt_trigger_alert(symbol, trigger.triggers, close, current_stop)):
                     mark_trigger_sent(symbol, trigger.triggers, close, current_stop)
-                    _send_chart_quietly(symbol, df, current_stop, f"긴급: {fmt_symbol(symbol)}")
+                    _send_chart_quietly(symbol, df, current_stop, fmt_chart_caption(symbol, "즉각 대응"))
                 else:
                     unsent += 1
             else:
@@ -565,7 +574,8 @@ def run_github_actions_mode() -> None:
         problem = _portfolio_problem()
         if problem:
             logger.error("포트폴리오 점검 실패: %s", problem)
-            tg.send_message(f"⚠️ ATR 모니터 중단 — {problem}", parse_mode="")
+            tg.send_message(fmt_ops_alert("모니터 중단", "원인: " + _esc(problem),
+                                          action="포트폴리오 시트를 확인"))
             sys.exit(1)
 
     # A single local transaction covers download, decisions, notifications and
@@ -580,7 +590,8 @@ def run_github_actions_mode() -> None:
                     log_masking.register_state_symbols_for_github_actions(loaded_state, KR_STOCK_NAMES)
             except drive_state.StateSyncError as e:
                 logger.error("상태 파일 로드 실패: %s", e)
-                tg.send_message(f"⚠️ ATR 모니터 중단 — 상태 파일 로드 실패: {e}")
+                tg.send_message(fmt_ops_alert("모니터 중단",
+                                              "원인: 상태 파일 로드 실패 — " + explain_state_sync_error(e)))
                 sys.exit(1)
 
             try:
@@ -600,12 +611,11 @@ def run_github_actions_mode() -> None:
     except StateLockError:
         # Acquisition failure must never enter pull/job/push or expose a path.
         logger.error("상태 잠금 실패 — 이번 실행을 중단합니다")
-        tg.send_message("⚠️ ATR 모니터 중단 — 상태 잠금을 확보하지 못했습니다", parse_mode="")
+        tg.send_message(fmt_ops_alert("모니터 중단", "원인: 상태 잠금을 확보하지 못했습니다"))
         sys.exit(1)
     if _problems:
         # 상태는 위에서 이미 저장했다. 실패를 초록색으로 끝내지 않는다.
-        lines = "\n".join(f"• {problem}" for problem in _problems[:10])
-        tg.send_message(f"⚠️ ATR 모니터 — 이번 실행에 문제가 있었습니다\n{lines}", parse_mode="")
+        tg.send_message(fmt_run_problems(_problems))
         logger.error("문제가 있었던 실행 — 종료코드 1 (%d건)", len(_problems))
         sys.exit(1)
     logger.info("GitHub Actions 완료")
@@ -644,11 +654,11 @@ def _job_chart(symbol):
     frame = fetch_ohlcv(symbol)
     if frame is None or frame.empty or atr_input_issue(frame, ATR_PERIOD):
         _note_problem('차트 시세 입력을 확인할 수 없습니다')
-        tg.send_message(f'{symbol} 데이터 조회 실패')
+        tg.send_message(fmt_ops_alert(f'차트 데이터 조회 실패 — {symbol}'))
         return False
     record = load_stops().get(symbol)
     chart = plot_atr_chart(symbol, frame, registered_stop=record.current_stop if record else None, as_bytes=True)
-    if not chart or not tg.send_photo(chart, caption=f'{symbol} ATR({ATR_PERIOD}일) 차트'):
+    if not chart or not tg.send_photo(chart, caption=fmt_chart_caption(symbol, f'ATR({ATR_PERIOD}일) 차트')):
         _note_problem('차트 전송을 확인할 수 없습니다')
         return False
     return True
@@ -668,13 +678,13 @@ def run_scheduler() -> None:
     schedule.every(10).minutes.do(_scheduled_job, job_trigger_check)
 
     logger.info("스케줄러 시작 — Ctrl+C로 종료")
-    if not tg.send_message(
-        f"ATR 모니터링 시작\n"
-        f"모니터링: {len(ALL_SYMBOLS)}종목 "
-        f"(KR {len(KR_SYMBOLS)} / US {len(US_SYMBOLS)} / Crypto {len(CRYPTO_SYMBOLS)})\n"
-        f"로컬 일일 리포트: KR 매일 {KR_REPORT_TIME} / US·Crypto 매일 {US_REPORT_TIME}\n"
-        f"Stop 체크: 30분 주기 / 트리거: 10분 주기"
-    ):
+    if not tg.send_message(fmt_ops_alert(
+        "모니터링 시작",
+        f"감시: {len(ALL_SYMBOLS)}종목 · 국내 {len(KR_SYMBOLS)} · 미국 {len(US_SYMBOLS)} · 크립토 {len(CRYPTO_SYMBOLS)}\n"
+        f"일일 리포트: 국내 매일 {_esc(KR_REPORT_TIME)} · 미국·크립토 매일 {_esc(US_REPORT_TIME)}\n"
+        f"점검 주기: 손절선 30분 · 트리거 10분",
+        emoji="✅",
+    )):
         _note_problem('스케줄러 시작 알림 전송 미확인')
     try:
         while True:
@@ -685,7 +695,7 @@ def run_scheduler() -> None:
             time.sleep(30)
     except KeyboardInterrupt:
         logger.info("스케줄러 종료")
-        if not tg.send_message("ATR 모니터링 종료"):
+        if not tg.send_message(fmt_ops_alert("모니터링 종료", emoji="ℹ️")):
             _note_problem('스케줄러 종료 알림 전송 미확인')
 
 

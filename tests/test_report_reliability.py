@@ -84,7 +84,7 @@ def test_weekly_generation_failure_keeps_window_open_then_recovers(reports, monk
 @pytest.mark.parametrize("failure_at", [0, 1, 2, 3])
 def test_failed_report_chunk_keeps_window_open_and_retry_resends_body(reports, monkeypatch, failure_at):
     window = reports.windows()[0]
-    long_text = "\n".join("x" * 100 for _ in range(60))  # Three chunks, then Chandelier text.
+    long_text = "\n".join("x" * 100 for _ in range(100))  # Three 4,096-char chunks, then Chandelier text.
     monkeypatch.setattr(telegram, "fmt_daily_report", lambda *a, **k: long_text)
     attempts = []
 
