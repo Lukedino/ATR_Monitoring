@@ -85,29 +85,33 @@ def test_telegram_module_never_uses_naive_server_clock():
 
 
 # ── 즉각 대응 ───────────────────────────────────────────────────────────
-def test_trigger_alert_follows_common_format():
+def test_trigger_alert_keeps_classic_layout_with_readable_text():
+    # 사용자 선호(2026-11-14): 예전 틀(🚨·구분선 3개·괄호 설명·행동 줄·📅)을 유지
     text = tg.fmt_trigger_alert(KR, ["STOP NEAR 1.2% (Stop=57,400.00)", "VOLUME x2.3 (평균 대비 230%)"],
                                 58100.0, 57400.0)
     lines = text.split("\n")
-    assert lines[0] == "🔴 <b>[ATR] 즉각 대응 — 가상전자</b>"
-    assert lines[1] == "11/13(금) 16:28 · 999990.KS · 가상계좌"
-    assert "• 손절선 근접 1.2%" in lines and "• 거래량 2.3배 · 20일 평균 대비" in lines
-    assert "현재가: 58,100원" in lines
-    assert "손절선: 57,400원 · 거리 1.2%" in lines
-    assert lines[-1].startswith("👉 ")
-    for banned in ("STOP NEAR", "VOLUME", "57,400.00", "━", " | ", "x2.3"):
+    assert lines[0] == "🚨 <b>[ATR] 즉각 대응 트리거 감지</b>"
+    assert lines[1] == lines[6] == lines[9] == "━━━━━━━━━━━━━━━━"
+    assert lines[2] == "<b>가상전자</b> · 999990.KS"
+    assert lines[3] == "대상: 가상계좌"
+    assert lines[4] == "현재가: 58,100원"
+    assert "손절선: 57,400원 (거리 1.2%)" in lines
+    assert "  • 손절선 근접 1.2%" in lines and "  • 거래량 2.3배 (20일 평균 대비)" in lines
+    assert lines[-2] == "🔴 <b>매도 준비!</b> 손절선 도달 임박 — 손절 기준 재확인"
+    assert lines[-1] == "📅 11/13(금) 16:28"
+    for banned in ("STOP NEAR", "VOLUME", "57,400.00", " | ", "x2.3"):
         assert banned not in text
     assert_valid_html(text)
 
 
 @pytest.mark.parametrize("code,label", [
-    ("SURGE +5.3% (Highest High 갱신)", "급등 +5.3%"),
-    ("SURGE DOWN -6.1% (손실 확대 경보)", "급락 -6.1%"),
+    ("SURGE +5.3% (Highest High 갱신)", "급등 +5.3% (최고가 갱신)"),
+    ("SURGE DOWN -6.1% (손실 확대 경보)", "급락 -6.1% (손실 확대 경보)"),
     ("GAP UP +3.2%", "갭 상승 +3.2%"),
-    ("GAP DOWN -3.4% (Stop 즉시 이탈 위험)", "갭 하락 -3.4% · 손절선 이탈 위험"),
-    ("STOP BREACH 1.0% 하회 (Stop=98.00) — 손절선 이탈", "손절선 이탈 · 1.0% 아래"),
+    ("GAP DOWN -3.4% (Stop 즉시 이탈 위험)", "갭 하락 -3.4% (손절선 즉시 이탈 위험)"),
+    ("STOP BREACH 1.0% 하회 (Stop=98.00) — 손절선 이탈", "손절선 이탈 1.0% 하회"),
     ("STOP MISMATCH 등록 Stop 이 현재가의 4.0배 (Stop=400.00) — 분할·데이터 점검 후 재등록 필요",
-     "손절선 단위 불일치 · 현재가의 4.0배"),
+     "손절선 단위 불일치 · 현재가의 4.0배 (분할·데이터 점검 후 재등록)"),
     ("UNKNOWN <code>", "UNKNOWN <code>"),
 ])
 def test_trigger_codes_are_translated(code, label):
@@ -123,9 +127,13 @@ def test_variable_text_is_escaped(monkeypatch):
     assert_valid_html(text)
 
 
-def test_up_only_trigger_is_green_and_volume_only_is_yellow():
-    assert tg.fmt_trigger_alert("SYN", ["GAP UP +3.2%"], 100.0, None).startswith("🟢 ")
-    assert tg.fmt_trigger_alert("SYN", ["VOLUME x3.1 (평균 대비 310%)"], 100.0, None).startswith("🟡 ")
+def test_action_line_matches_trigger_kind():
+    up = tg.fmt_trigger_alert("SYN", ["GAP UP +3.2%"], 100.0, None).split("\n")
+    vol = tg.fmt_trigger_alert("SYN", ["VOLUME x3.1 (평균 대비 310%)"], 100.0, None).split("\n")
+    down = tg.fmt_trigger_alert("SYN", ["SURGE DOWN -7.2% (손실 확대 경보)"], 100.0, None).split("\n")
+    assert up[-2].startswith("📈 <b>손절선 상향 검토!</b>")
+    assert vol[-2].startswith("🔍 <b>ATR 확인</b>")
+    assert down[-2].startswith("🔻 <b>손실 관리!</b>")
 
 
 # ── 그 밖의 메시지 ─────────────────────────────────────────────────────

@@ -491,14 +491,14 @@ def fmt_breakeven_alert(symbol: str, entry_price: float) -> str:
 
 _NUM = r"([+-]?\d+(?:\.\d+)?)"
 _TRIGGER_RULES = [
-    (re.compile(r"^STOP MISMATCH .*?현재가의 (\d+(?:\.\d+)?)배"), "손절선 단위 불일치 · 현재가의 {0}배"),
-    (re.compile(r"^STOP BREACH (\d+(?:\.\d+)?)%"),              "손절선 이탈 · {0}% 아래"),
+    (re.compile(r"^STOP MISMATCH .*?현재가의 (\d+(?:\.\d+)?)배"), "손절선 단위 불일치 · 현재가의 {0}배 (분할·데이터 점검 후 재등록)"),
+    (re.compile(r"^STOP BREACH (\d+(?:\.\d+)?)%"),              "손절선 이탈 {0}% 하회"),
     (re.compile(r"^STOP NEAR (\d+(?:\.\d+)?)%"),                "손절선 근접 {0}%"),
-    (re.compile(r"^SURGE DOWN " + _NUM + "%"),                  "급락 {0}%"),
-    (re.compile(r"^SURGE " + _NUM + "%"),                       "급등 {0}%"),
-    (re.compile(r"^VOLUME x(\d+(?:\.\d+)?)"),                   "거래량 {0}배 · 20일 평균 대비"),
+    (re.compile(r"^SURGE DOWN " + _NUM + "%"),                  "급락 {0}% (손실 확대 경보)"),
+    (re.compile(r"^SURGE " + _NUM + "%"),                       "급등 {0}% (최고가 갱신)"),
+    (re.compile(r"^VOLUME x(\d+(?:\.\d+)?)"),                   "거래량 {0}배 (20일 평균 대비)"),
     (re.compile(r"^GAP UP " + _NUM + "%"),                      "갭 상승 {0}%"),
-    (re.compile(r"^GAP DOWN " + _NUM + "%"),                    "갭 하락 {0}% · 손절선 이탈 위험"),
+    (re.compile(r"^GAP DOWN " + _NUM + "%"),                    "갭 하락 {0}% (손절선 즉시 이탈 위험)"),
 ]
 
 
@@ -513,7 +513,11 @@ def trigger_label(trigger: str) -> str:
 
 
 def fmt_trigger_alert(symbol: str, triggers: list[str], close: float, stop: float | None) -> str:
-    """즉각 대응 트리거 감지 긴급 알림."""
+    """즉각 대응 트리거 감지 긴급 알림.
+
+    사용자 선호(2026-11-14): 예전 틀(🚨 머리 · ━ 구분선 3개 · 감지 항목 괄호 설명 · 행동 줄 · 📅 시각)을
+    유지하고, 영문 코드 한글화·값 한 줄씩·원화 소수 제거·한국 시각으로 가독성만 올린다.
+    """
     # 트리거 유형에 따라 행동 지침 결정 (두 단어 prefix로 상승/하락 구분)
     has_stop      = any(t.startswith("STOP") for t in triggers)
     has_down      = any(t.startswith("SURGE DOWN") or t.startswith("GAP DOWN") for t in triggers)
@@ -523,33 +527,36 @@ def fmt_trigger_alert(symbol: str, triggers: list[str], close: float, stop: floa
     has_mismatch  = any(t.startswith("STOP MISMATCH") for t in triggers)
 
     if has_mismatch:
-        emoji, action = "🟡", "등록 손절선 점검 — 현재가와 단위가 맞지 않습니다(액면분할 등). 손절선 재등록 필요"
+        emoji, head, rest = "🛠", "등록 손절선 점검!", "현재가와 단위가 맞지 않습니다(액면분할 등) — 손절선 재등록 필요"
     elif has_breach:
-        emoji, action = "🔴", "손절선 이탈 — 증권사 지정가 체결 여부 확인, 미체결이면 손절 실행"
+        emoji, head, rest = "🛑", "손절선 이탈!", "종가가 등록 손절선 아래 — 증권사 지정가 체결 여부 확인, 미체결이면 손절 실행"
     elif has_stop and has_down:
-        emoji, action = "🔴", "즉각 손절 검토 — 손절선 근접에 추가 하락, 포지션 축소 우선"
+        emoji, head, rest = "🔴", "즉각 손절 검토!", "손절선 근접 + 추가 하락 — 포지션 축소 우선"
     elif has_stop:
-        emoji, action = "🔴", "매도 준비 — 손절선 도달 임박, 손절 기준 재확인"
+        emoji, head, rest = "🔴", "매도 준비!", "손절선 도달 임박 — 손절 기준 재확인"
     elif has_down:
-        emoji, action = "🔴", "손실 관리 — 급락·갭 하락, 손절선 이탈 여부 즉시 확인"
+        emoji, head, rest = "🔻", "손실 관리!", "급락·갭 하락 감지 — 손절선 이탈 여부 즉시 확인"
     elif has_up:
-        emoji, action = "🟢", "손절선 상향 검토 — 가격 상승에 맞춰 손절선 재계산"
+        emoji, head, rest = "📈", "손절선 상향 검토!", "가격 상승에 맞춰 손절선 재계산"
     else:  # VOLUME 등
-        emoji, action = "🟡", "ATR 확인 — 거래량 급증, 추가 변동성 주의"
+        emoji, head, rest = "🔍", "ATR 확인", "거래량 급증 감지 — 추가 변동성 주의"
 
-    lines = [
-        _header(emoji, f"즉각 대응 — {_name(symbol)}"),
-        _symbol_subline(symbol),
-        "",
-        "<b>감지</b>",
-        *[f"• {esc(trigger_label(t))}" for t in triggers],
-        "",
-        f"현재가: {fmt_price(symbol, close)}",
-    ]
+    name = _name(symbol).split(" | ")[0].strip()
+    title = f"<b>{esc(name)}</b>" if name and name != symbol else f"<b>{esc(symbol)}</b>"
+    if name and name != symbol:
+        title += f" · {esc(symbol)}"
+    divider = "━━━━━━━━━━━━━━━━"
+    lines = [f"🚨 <b>{SOURCE} 즉각 대응 트리거 감지</b>", divider, title]
+    accounts = _accounts(symbol)
+    if accounts:
+        lines.append(f"대상: {esc(accounts)}")
+    lines.append(f"현재가: {fmt_price(symbol, close)}")
     if stop and stop > 0:
         dist_pct = abs(close - stop) / stop * 100
-        lines.append(f"손절선: {fmt_price(symbol, stop)} · 거리 {dist_pct:.1f}%")
-    lines += ["", f"👉 {action}"]
+        lines.append(f"손절선: {fmt_price(symbol, stop)} (거리 {dist_pct:.1f}%)")
+    lines += [divider, *[f"  • {esc(trigger_label(t))}" for t in triggers], divider,
+              f"{emoji} <b>{esc(head)}</b> {esc(rest)}",
+              f"📅 {fmt_kst()}"]
     return "\n".join(lines)
 
 
