@@ -466,6 +466,50 @@ def mark_trigger_sent(
 
 
 # ─────────────────────────────────────────────────────────────
+# 데이터 공백 연속 횟수 (data_gaps)
+#
+# 시세는 왔는데 이력이 짧아 ATR 을 계산할 수 없는 종목을 종목별로 센다. 야후의 하루짜리
+# 공백 하나가 그날 실행 전부를 '실패' 로 만들지 않게, 호출자가 연속 횟수로 판단한다.
+#   {"SYM": {"count": 2, "since": "2026-11-19T06:00+00:00"}}   ← since = 연속 시작 UTC
+# ─────────────────────────────────────────────────────────────
+
+@state_locked(_state_path)
+def record_data_gaps(
+    gap_symbols:     list[str],
+    checked_symbols: list[str],
+    known_symbols:   list[str],
+    *,
+    now_utc:         datetime | None = None,
+) -> dict[str, int]:
+    """이번 실행 결과를 반영하고 공백 종목의 연속 횟수를 돌려준다.
+
+    gap_symbols     : 이번에 ATR 계산 불가였던 종목 → +1
+    checked_symbols : 이번에 계산에 성공한 종목 → 항목 삭제
+    known_symbols   : 감시 대상 전체 — 여기 없는 항목은 정리
+    나머지 종목(이번 실행 대상이 아니거나 시세 자체가 없던 종목)은 그대로 둔다.
+    바뀐 게 없으면 쓰지 않는다.
+    """
+    now  = utc_now(now_utc)
+    raw  = _load_raw()
+    gaps = raw.get("data_gaps", {})
+    updated = {sym: dict(rec) for sym, rec in gaps.items()
+               if sym in known_symbols and sym not in checked_symbols}
+    for sym in gap_symbols:
+        rec = updated.get(sym)
+        if rec is None:
+            updated[sym] = {"count": 1, "since": now.isoformat(timespec="minutes")}
+        else:
+            rec["count"] += 1
+    if updated != gaps:
+        if updated:
+            raw["data_gaps"] = updated
+        else:
+            raw.pop("data_gaps", None)
+        _save_raw(raw)
+    return {sym: updated[sym]["count"] for sym in gap_symbols}
+
+
+# ─────────────────────────────────────────────────────────────
 # 요약 출력
 # ─────────────────────────────────────────────────────────────
 

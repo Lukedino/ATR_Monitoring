@@ -441,6 +441,7 @@ US_SYMBOLS: list[str] = [
 ATR_PERIOD: int          = 14      # Wilder 표준 14일
 LOOKBACK_DAYS: int       = 100     # 데이터 조회 기간 (ATR 안정화용 여유분 포함)
 ATR_HISTORY_PERIOD: int  = 20      # 알림 임계값 계산에 사용할 과거 ATR 평균 기간
+DATA_GAP_FAIL_AFTER: int = 3       # 이력 부족으로 ATR 계산 불가가 연속 N회째면 실행 실패로 올림(그 전엔 경고만)
 
 # ATR 알림 조건
 # 현재 ATR이 최근 N일 ATR 평균의 ALERT_MULTIPLIER 배를 초과하면 알림

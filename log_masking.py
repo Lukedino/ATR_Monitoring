@@ -322,7 +322,7 @@ def register_state_symbols_for_github_actions(
 ) -> dict[str, str]:
     """Extend masks from a validated pull result, without opening any state file.
 
-    Only position/alert keys identify symbols. Unknown state fields, numeric
+    Only position/alert/data-gap keys identify symbols. Unknown state fields, numeric
     values and trigger bodies are never collected or emitted as GHA commands.
     """
     env = os.environ if env is None else env
@@ -330,7 +330,7 @@ def register_state_symbols_for_github_actions(
         return {}
     symbols = set()
     if isinstance(state_data, Mapping):
-        for section in ("positions", "alert_log"):
+        for section in ("positions", "alert_log", "data_gaps"):
             records = state_data.get(section, {})
             if isinstance(records, Mapping):
                 symbols.update(symbol for symbol in records if isinstance(symbol, str) and symbol)

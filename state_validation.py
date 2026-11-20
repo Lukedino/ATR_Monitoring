@@ -99,7 +99,7 @@ def validate_state(data: dict) -> dict:
     if not isinstance(data, dict) or not any(key in data for key in ("positions", "alert_log")):
         raise StateValidationError("State requires a positions or alert_log object")
     _json_value(data)
-    for section in ("positions", "alert_log", "done_windows"):
+    for section in ("positions", "alert_log", "done_windows", "data_gaps"):
         if section in data and not isinstance(data[section], dict):
             raise StateValidationError("State section must be an object")
     for symbol, record in data.get("positions", {}).items():
@@ -134,6 +134,16 @@ def validate_state(data: dict) -> dict:
     for day, names in data.get("done_windows", {}).items():
         _day(day)
         validate_string_list(names)
+    for symbol, record in data.get("data_gaps", {}).items():
+        _text(symbol)
+        if not isinstance(record, dict):
+            raise StateValidationError("Data gap record must be an object")
+        count = record.get("count")
+        if type(count) is not int or count < 1:
+            raise StateValidationError("Data gap count must be a positive integer")
+        if "since" not in record:
+            raise StateValidationError("Data gap record is missing its start time")
+        _timestamp(record["since"])
     return data
 
 

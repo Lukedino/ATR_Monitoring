@@ -48,6 +48,7 @@ from config import (
     KR_REPORT_TIME,
     US_REPORT_TIME,
     ATR_PERIOD,
+    DATA_GAP_FAIL_AFTER,
     fmt_price,
     fmt_symbol,
 )
@@ -73,6 +74,7 @@ from stop_manager import (
     mark_trigger_sent,
     is_window_done,
     mark_window_done,
+    record_data_gaps,
 )
 import telegram_bot as tg
 # 서식 헬퍼는 직접 가져온다 — 테스트가 monitor.tg 를 가짜로 바꿔도 메시지 모양은 실제 것을 쓴다.
@@ -198,6 +200,8 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
 
     chandelier_list = []
     failed: list[str] = []
+    gap_symbols: list[str] = []       # ATR 계산 불가(이력 부족) — 연속 횟수로 판단
+    computed: list[str] = []          # ATR 계산 성공 — 연속 공백 초기화
     unsent = 0
     for symbol, df in ohlcv_map.items():
         if df.empty:
@@ -206,9 +210,16 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
         try:
             ch = calc_chandelier_stop(symbol, df, ATR_PERIOD)
             if ch is None:
-                failed.append(symbol)
-                logger.error("ATR 계산 불가 — 상태 유지 (%s)", atr_input_issue(df, ATR_PERIOD) or "calculation_unavailable")
+                issue = atr_input_issue(df, ATR_PERIOD) or "calculation_unavailable"
+                if issue == "insufficient_history":
+                    # 이력이 짧게 온 것뿐이면 연속 횟수로 판단한다(아래). 가격 모순·결측은 즉시 실패.
+                    gap_symbols.append(symbol)
+                    logger.warning("ATR 계산 불가 — 상태 유지 (%s)", issue)
+                else:
+                    failed.append(symbol)
+                    logger.error("ATR 계산 불가 — 상태 유지 (%s)", issue)
                 continue
+            computed.append(symbol)
             chandelier_list.append(ch)
 
             # 즉각 트리거 체크
@@ -254,8 +265,28 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
             failed.append(symbol)
             logger.error("종목 처리 실패 — 다음 종목으로 계속: %s (%s)", symbol, type(exc).__name__)
 
+    # 종목 하나의 일시적 데이터 공백(야후가 이력을 짧게 주는 날)이 실행 전체를 실패로 만들지 않게,
+    # 연속 DATA_GAP_FAIL_AFTER 회째부터만 실패로 올린다. 예외는 위에서 즉시 실패다(코드 버그 신호).
+    persistent_gaps = 0
+    try:
+        gap_counts = record_data_gaps(gap_symbols, computed, ALL_SYMBOLS)
+    except Exception as exc:
+        # 횟수를 셀 수 없으면 너그럽게 넘기지 않는다 — 예전처럼 전부 실패로 본다.
+        _note_problem(f"데이터 공백 기록 저장 실패: {type(exc).__name__}")
+        gap_counts = {symbol: DATA_GAP_FAIL_AFTER for symbol in gap_symbols}
+    for symbol in gap_symbols:
+        count = gap_counts.get(symbol, DATA_GAP_FAIL_AFTER)
+        if count >= DATA_GAP_FAIL_AFTER:
+            failed.append(symbol)
+            persistent_gaps += 1
+            logger.error("데이터 부족 — 연속 %d회, 실패로 올림: %s", count, symbol)
+        else:
+            logger.warning("데이터 부족 — 연속 %d/%d회, 실패로 올리지 않음: %s",
+                           count, DATA_GAP_FAIL_AFTER, symbol)
+
     if failed:
-        _note_problem(f"종목 처리 실패 {len(failed)}/{len(ohlcv_map)}")
+        detail = f" (데이터 부족 연속 {DATA_GAP_FAIL_AFTER}회 이상 {persistent_gaps}종목)" if persistent_gaps else ""
+        _note_problem(f"종목 처리 실패 {len(failed)}/{len(ohlcv_map)}{detail}")
     if unsent:
         _note_problem(f"텔레그램 전송 실패 {unsent}건 — 기록하지 않았으므로 다음 실행이 다시 보낸다")
 
