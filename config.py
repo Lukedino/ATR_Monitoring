@@ -442,6 +442,8 @@ ATR_PERIOD: int          = 14      # Wilder 표준 14일
 LOOKBACK_DAYS: int       = 100     # 데이터 조회 기간 (ATR 안정화용 여유분 포함)
 ATR_HISTORY_PERIOD: int  = 20      # 알림 임계값 계산에 사용할 과거 ATR 평균 기간
 DATA_GAP_FAIL_AFTER: int = 3       # 이력 부족으로 ATR 계산 불가가 연속 N회째면 실행 실패로 올림(그 전엔 경고만)
+DATA_GAP_MAX_HOURS: int  = 3       # …또는 그 연속이 N시간 이상 이어지면 실패(실행 간격이 긴 슬롯 대비)
+DATA_GAP_MAX_SYMBOLS: int = 2      # 한 실행의 이력 부족 종목이 N개를 넘으면 유예 없이 전부 실패(대량 장애 은폐 방지)
 
 # ATR 알림 조건
 # 현재 ATR이 최근 N일 ATR 평균의 ALERT_MULTIPLIER 배를 초과하면 알림

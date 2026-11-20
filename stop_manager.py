@@ -480,8 +480,8 @@ def record_data_gaps(
     known_symbols:   list[str],
     *,
     now_utc:         datetime | None = None,
-) -> dict[str, int]:
-    """이번 실행 결과를 반영하고 공백 종목의 연속 횟수를 돌려준다.
+) -> dict[str, dict]:
+    """이번 실행 결과를 반영하고 공백 종목의 기록({count, since} 사본)을 돌려준다.
 
     gap_symbols     : 이번에 ATR 계산 불가였던 종목 → +1
     checked_symbols : 이번에 계산에 성공한 종목 → 항목 삭제
@@ -506,7 +506,7 @@ def record_data_gaps(
         else:
             raw.pop("data_gaps", None)
         _save_raw(raw)
-    return {sym: updated[sym]["count"] for sym in gap_symbols}
+    return {sym: dict(updated[sym]) for sym in gap_symbols}
 
 
 # ─────────────────────────────────────────────────────────────

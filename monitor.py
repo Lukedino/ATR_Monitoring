@@ -25,6 +25,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 
 # Administration must validate arguments before config can load a portfolio.
 if __name__ == '__main__':
@@ -49,6 +50,8 @@ from config import (
     US_REPORT_TIME,
     ATR_PERIOD,
     DATA_GAP_FAIL_AFTER,
+    DATA_GAP_MAX_HOURS,
+    DATA_GAP_MAX_SYMBOLS,
     fmt_price,
     fmt_symbol,
 )
@@ -179,6 +182,52 @@ def _state_path(*args, **kwargs):
     return STATE_FILE
 
 
+def _now_utc():
+    """데이터 공백 시간 판정의 현재 시각. 테스트가 바꿔 끼운다."""
+    from market_dates import utc_now
+    return utc_now()
+
+
+def _judge_data_gaps(gap_symbols: list[str], computed: list[str]) -> list[str]:
+    """이력 부족 종목 중 실패로 올릴 것을 고른다. 연속 기록은 어느 경우든 갱신한다.
+
+    실패: 연속 DATA_GAP_FAIL_AFTER 회 이상, 연속 DATA_GAP_MAX_HOURS 시간 이상(실행 간격이 긴
+    주말 크립토 슬롯 대비), 또는 이번 실행에서 DATA_GAP_MAX_SYMBOLS 종목 초과(대량 장애는
+    종목 하나의 일시 공백이 아니다). 그 밖에는 경고만 남긴다.
+    """
+    if not gap_symbols:
+        try:
+            record_data_gaps([], computed, ALL_SYMBOLS)   # 성공 종목의 연속 기록 정리
+        except Exception as exc:
+            _note_problem(f"데이터 공백 기록 저장 실패: {type(exc).__name__}")
+        return []
+    now = _now_utc()
+    try:
+        records = record_data_gaps(gap_symbols, computed, ALL_SYMBOLS, now_utc=now)
+    except Exception as exc:
+        # 횟수를 셀 수 없으면 너그럽게 넘기지 않는다 — 예전처럼 전부 실패로 본다.
+        _note_problem(f"데이터 공백 기록 저장 실패: {type(exc).__name__}")
+        return list(gap_symbols)
+    bulk = len(gap_symbols) > DATA_GAP_MAX_SYMBOLS
+    if bulk:
+        logger.error("데이터 부족 %d종목 동시 발생(상한 %d) — 유예 없이 전부 실패로 올림",
+                     len(gap_symbols), DATA_GAP_MAX_SYMBOLS)
+    persistent = []
+    for symbol in gap_symbols:
+        count = records[symbol]["count"]
+        since = datetime.fromisoformat(records[symbol]["since"])
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        hours = (now - since).total_seconds() / 3600
+        if bulk or count >= DATA_GAP_FAIL_AFTER or hours >= DATA_GAP_MAX_HOURS:
+            persistent.append(symbol)
+            logger.error("데이터 부족 — 연속 %d회·%.1f시간, 실패로 올림: %s", count, hours, symbol)
+        else:
+            logger.warning("데이터 부족 — 연속 %d/%d회·%.1f/%d시간, 실패로 올리지 않음: %s",
+                           count, DATA_GAP_FAIL_AFTER, hours, DATA_GAP_MAX_HOURS, symbol)
+    return persistent
+
+
 @state_locked(_state_path)
 def job_stop_check(symbols: list[str] | None = None) -> None:
     """
@@ -265,27 +314,15 @@ def job_stop_check(symbols: list[str] | None = None) -> None:
             failed.append(symbol)
             logger.error("종목 처리 실패 — 다음 종목으로 계속: %s (%s)", symbol, type(exc).__name__)
 
-    # 종목 하나의 일시적 데이터 공백(야후가 이력을 짧게 주는 날)이 실행 전체를 실패로 만들지 않게,
-    # 연속 DATA_GAP_FAIL_AFTER 회째부터만 실패로 올린다. 예외는 위에서 즉시 실패다(코드 버그 신호).
-    persistent_gaps = 0
-    try:
-        gap_counts = record_data_gaps(gap_symbols, computed, ALL_SYMBOLS)
-    except Exception as exc:
-        # 횟수를 셀 수 없으면 너그럽게 넘기지 않는다 — 예전처럼 전부 실패로 본다.
-        _note_problem(f"데이터 공백 기록 저장 실패: {type(exc).__name__}")
-        gap_counts = {symbol: DATA_GAP_FAIL_AFTER for symbol in gap_symbols}
-    for symbol in gap_symbols:
-        count = gap_counts.get(symbol, DATA_GAP_FAIL_AFTER)
-        if count >= DATA_GAP_FAIL_AFTER:
-            failed.append(symbol)
-            persistent_gaps += 1
-            logger.error("데이터 부족 — 연속 %d회, 실패로 올림: %s", count, symbol)
-        else:
-            logger.warning("데이터 부족 — 연속 %d/%d회, 실패로 올리지 않음: %s",
-                           count, DATA_GAP_FAIL_AFTER, symbol)
+    # 종목 하나의 일시적 데이터 공백(야후가 이력을 짧게 주는 날)이 실행 전체를 실패로 만들지 않게
+    # 잠깐 유예한다. 예외·가격 모순은 위에서 이미 즉시 실패다(코드 버그·자료 오류 신호).
+    persistent_gaps = _judge_data_gaps(gap_symbols, computed)
+    failed.extend(persistent_gaps)
 
     if failed:
-        detail = f" (데이터 부족 연속 {DATA_GAP_FAIL_AFTER}회 이상 {persistent_gaps}종목)" if persistent_gaps else ""
+        detail = (f" (데이터 부족 {len(persistent_gaps)}종목 — 연속 {DATA_GAP_FAIL_AFTER}회·"
+                  f"{DATA_GAP_MAX_HOURS}시간 이상 또는 {DATA_GAP_MAX_SYMBOLS}종목 초과 동시 발생)"
+                  if persistent_gaps else "")
         _note_problem(f"종목 처리 실패 {len(failed)}/{len(ohlcv_map)}{detail}")
     if unsent:
         _note_problem(f"텔레그램 전송 실패 {unsent}건 — 기록하지 않았으므로 다음 실행이 다시 보낸다")

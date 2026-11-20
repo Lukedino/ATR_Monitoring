@@ -61,11 +61,11 @@ def test_state_positions_and_alert_only_symbols_extend_existing_masks(captured):
 
 def test_data_gap_only_symbols_are_masked_too(captured):
     install(captured)
-    state = {"positions": {}, "data_gaps": {"GAP-ONLY-QC": {"count": 1, "since": "2026-01-01T00:00+00:00"}}}
+    state = {"positions": {}, "data_gaps": {"SYM-9G01": {"count": 1, "since": "2026-01-01T00:00+00:00"}}}
     mapping = lm.register_state_symbols_for_github_actions(state, {}, env=ENV, stream=captured.commands)
-    logging.getLogger("monitor").warning("데이터 부족 — 연속 1/3회, 실패로 올리지 않음: %s", "GAP-ONLY-QC")
-    assert "GAP-ONLY-QC" not in captured.stream.getvalue()
-    assert set(mapping) == {"GAP-ONLY-QC"}
+    logging.getLogger("monitor").warning("데이터 부족 — 연속 1/3회, 실패로 올리지 않음: %s", "SYM-9G01")
+    assert "SYM-9G01" not in captured.stream.getvalue()
+    assert set(mapping) == {"SYM-9G01"}
 
 
 def test_state_registration_without_initial_install_is_still_protected(captured):
