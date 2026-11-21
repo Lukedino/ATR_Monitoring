@@ -387,6 +387,10 @@ def _run_daily_report(symbols: list[str], title: str) -> None:
     ohlcv_map = {s: df for s, df in fetch_portfolio(symbols).items() if not df.empty}
     if not ohlcv_map:
         raise RuntimeError(f"리포트 시세 수집 실패 — {title}")
+    # 일부만 받았으면 본문은 받은 종목으로 그대로 보내되, 빠진 종목이 많으면 실행을 실패로 남긴다
+    # (job_stop_check 와 같은 수집률 규칙).
+    if len(ohlcv_map) < len(symbols) * MIN_COLLECTION_RATIO:
+        _note_problem(f"시세 수집 {len(ohlcv_map)}/{len(symbols)} — {title}")
 
     summary = summarize_portfolio_atr(ohlcv_map, ATR_PERIOD)
     if summary.empty:
@@ -493,6 +497,12 @@ def job_trigger_check() -> None:
         _note_problem(f"종목 처리 실패 {len(failed)}/{len(ohlcv_map)}")
     if unsent:
         _note_problem(f"텔레그램 전송 실패 {unsent}건 — 기록하지 않았으므로 다음 실행이 다시 보낸다")
+
+    # 시세를 못 받은 종목이 많으면 '트리거 없음' 은 '못 봤다' 는 뜻이다 — job_stop_check 와 같은 규칙.
+    # 받은 종목의 알림은 위에서 이미 나갔으므로 예외 대신 문제로만 올려 종료코드 1 로 끝낸다.
+    collected = sum(1 for df in ohlcv_map.values() if not df.empty)
+    if ALL_SYMBOLS and collected < len(ALL_SYMBOLS) * MIN_COLLECTION_RATIO:
+        _note_problem(f"시세 수집 {collected}/{len(ALL_SYMBOLS)}")
 
     if not found:
         logger.info("트리거 없음")

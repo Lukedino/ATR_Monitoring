@@ -255,3 +255,36 @@ def test_empty_drive_sheet_is_not_treated_as_a_loaded_portfolio():
     assert config._portfolio_source({"포트폴리오": []}, "") == "fallback"
     assert config._portfolio_source({"포트폴리오": ["A"]}, "") == "drive"
     assert config._portfolio_source(None, '{"x": ["A"]}') == "stock_list"
+
+
+# ── 트리거 체크도 시세를 못 받았으면 '트리거 없음' 이 아니다 (job_stop_check 와 같은 규칙) ──
+@pytest.mark.parametrize("received", [[], ["S0", "S1", "S2", "S3", "S4"]])
+def test_trigger_check_with_collection_below_the_threshold_is_a_problem(env, received):
+    wanted = [f"S{i}" for i in range(10)]
+    env.monkeypatch.setattr(monitor, "ALL_SYMBOLS", wanted)
+    env.monkeypatch.setattr(monitor, "fetch_portfolio",
+                            lambda syms: {s: (_bars(100.0) if s in received else pd.DataFrame()) for s in syms})
+    env.monkeypatch.setattr(monitor, "check_immediate_triggers",
+                            lambda *a: types.SimpleNamespace(has_trigger=False, triggers=[]))
+    monitor.job_trigger_check()
+    assert any(f"시세 수집 {len(received)}/10" in p for p in monitor._problems)
+
+
+def test_trigger_check_with_all_fetches_failing_exits_non_zero(env):
+    env.monkeypatch.setenv("GHA_JOB", "trigger_check")
+    env.monkeypatch.setattr(monitor.drive_state, "from_env", lambda path: None)
+    env.monkeypatch.setattr(monitor, "ALL_SYMBOLS", ["S0", "S1"])
+    env.monkeypatch.setattr(monitor, "fetch_portfolio", lambda syms: {})
+    with pytest.raises(SystemExit) as stopped:
+        monitor.run_github_actions_mode()
+    assert stopped.value.code == 1
+
+
+def test_trigger_check_with_nearly_complete_collection_is_clean(env):
+    wanted = [f"S{i}" for i in range(10)]
+    env.monkeypatch.setattr(monitor, "ALL_SYMBOLS", wanted)
+    env.monkeypatch.setattr(monitor, "fetch_portfolio", lambda syms: {s: _bars(100.0) for s in wanted[:9]})
+    env.monkeypatch.setattr(monitor, "check_immediate_triggers",
+                            lambda *a: types.SimpleNamespace(has_trigger=False, triggers=[]))
+    monitor.job_trigger_check()
+    assert not monitor._problems

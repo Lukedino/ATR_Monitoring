@@ -210,3 +210,23 @@ def test_successful_photo_still_returns_true(monkeypatch):
     response._content = b'{"ok":true}'
     monkeypatch.setattr(telegram.requests, "post", lambda *a, **k: response)
     assert telegram.send_photo(b"synthetic-png") is True
+
+
+def test_report_with_partial_collection_sends_body_but_records_a_problem(reports, monkeypatch):
+    symbols = [f"SYM-KR{i}" for i in range(5)]
+    reports.data.clear()
+    reports.data.update({s: _bars() for s in symbols[:2]})
+    monkeypatch.setattr(monitor, "KR_SYMBOLS", symbols)
+    monitor.job_kr_daily_report()
+    assert "ATR summary" in reports.sent
+    assert any("시세 수집 2/5" in p for p in monitor._problems)
+
+
+def test_report_with_nearly_complete_collection_is_clean(reports, monkeypatch):
+    symbols = [f"SYM-KR{i}" for i in range(5)]
+    reports.data.clear()
+    reports.data.update({s: _bars() for s in symbols[:4]})
+    monkeypatch.setattr(monitor, "KR_SYMBOLS", symbols)
+    monitor.job_kr_daily_report()
+    assert "ATR summary" in reports.sent
+    assert not monitor._problems
