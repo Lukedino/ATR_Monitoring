@@ -242,14 +242,16 @@ def update_stop(
         )
 
     prev_stop = rec.current_stop
-    if new_stop > prev_stop and not commit:
+    # 저장값(소수 4자리)으로 비교한다. 반올림하면 같아지는 상향을 갱신으로 보면 'X → X' 알림이 나간다.
+    rounded_stop = round(new_stop, 4)
+    if rounded_stop > prev_stop and not commit:
         return UpdateResult(
             symbol=symbol, updated=True,
-            prev_stop=prev_stop, new_stop=round(new_stop, 4),
+            prev_stop=prev_stop, new_stop=rounded_stop,
             current_close=current_close, action="PENDING",
         )
-    if new_stop > prev_stop:
-        rec.current_stop = round(new_stop, 4)
+    if rounded_stop > prev_stop:
+        rec.current_stop = rounded_stop
         rec.last_updated = _now()
         if new_hh is not None:
             rec.highest_high = round(new_hh, 4)

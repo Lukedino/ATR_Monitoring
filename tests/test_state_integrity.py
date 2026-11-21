@@ -290,3 +290,18 @@ def test_drive_push_rejects_wrong_numeric_types_before_any_update(local_state):
     with pytest.raises(ds.StateSyncError):
         client.push()
     assert service.mock_files.updates == []
+
+
+@pytest.mark.parametrize("commit", [False, True])
+def test_stop_rise_that_rounds_to_the_same_value_is_held_not_updated(local_state, commit):
+    """저장값은 소수 4자리다. 반올림하면 같아지는 상향을 'UPDATED' 로 알리면 90 → 90 알림이 나간다."""
+    before = local_state.read_bytes()
+    result = sm.update_stop(SYMBOL, 90.00001, 100.0, commit=commit)
+    assert (result.updated, result.action) == (False, "HELD")
+    assert local_state.read_bytes() == before
+
+
+@pytest.mark.parametrize("new_stop, expected", [(90.0001, 90.0001), (89.9, 90.0), (89.99999, 90.0)])
+def test_trailing_stop_never_decreases_around_rounding(local_state, new_stop, expected):
+    sm.update_stop(SYMBOL, new_stop, 100.0)
+    assert sm.load_all()[SYMBOL].current_stop == expected
