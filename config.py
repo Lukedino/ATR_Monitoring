@@ -279,11 +279,18 @@ def _parse_portfolio_df(df) -> dict[str, list[str]]:
     return result
 
 
+# 구식 .xls(BIFF) 업로드는 openpyxl 로 읽을 수 없다. 받아 놓고 매번 같은 이유로 실패하는 대신
+# 무엇을 하면 되는지 담은 고정 오류 코드로 거절한다(민감 정보 없음).
+_XLS_UNSUPPORTED = "drive_portfolio_xls_unsupported_convert_to_xlsx"
+_drive_portfolio_error = ""
+
+
 def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
     """
     Google Drive에서 포트폴리오 파일을 다운로드하여 파싱합니다.
-    Google Sheets(xlsx 로 export) / 업로드된 .xlsx / CSV 파일 모두 지원.
+    Google Sheets(xlsx 로 export) / 업로드된 .xlsx / CSV 파일을 지원한다. 구식 .xls 는 거절한다.
     """
+    global _drive_portfolio_error
     sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     file_id = os.getenv("GDRIVE_PORTFOLIO_FILE_ID", "").strip()
     if not sa_json or not file_id:
@@ -309,11 +316,14 @@ def _load_portfolio_from_drive() -> "dict[str, list[str]] | None":
                 mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             ).execute()
             df = _portfolio_frame_from_bytes(raw, excel=True)
-        elif mime in (
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "application/vnd.ms-excel",
-        ):
-            # 업로드된 Excel (.xlsx / .xls) → 이진 파일로 읽기
+        elif mime == "application/vnd.ms-excel":
+            _drive_portfolio_error = _XLS_UNSUPPORTED
+            import logging as _log
+            _log.getLogger("config").warning(
+                "Drive 포트폴리오가 구식 .xls 형식입니다 — .xlsx 로 저장하거나 Google Sheets 로 변환하세요")
+            return None
+        elif mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            # 업로드된 Excel (.xlsx) → 이진 파일로 읽기
             raw = service.files().get_media(fileId=file_id).execute()
             df = _portfolio_frame_from_bytes(raw, excel=True)
         else:
@@ -370,7 +380,8 @@ def _unique_portfolio_object(pairs):
     return value
 
 
-def _select_portfolio(drive_portfolio, stock_list_env, *, drive_requested, has_credentials, in_ci):
+def _select_portfolio(drive_portfolio, stock_list_env, *, drive_requested, has_credentials, in_ci,
+                      drive_error=""):
     """Return (validated portfolio, actual source, non-sensitive error code).
 
     A service account alone can belong to state sync; it does not override a
@@ -383,7 +394,7 @@ def _select_portfolio(drive_portfolio, stock_list_env, *, drive_requested, has_c
         try:
             return _validated_portfolio(drive_portfolio), "drive", ""
         except ValueError:
-            return {}, "invalid", "drive_portfolio_unavailable_or_invalid"
+            return {}, "invalid", drive_error or "drive_portfolio_unavailable_or_invalid"
     if stock_list_env:
         try:
             parsed = json.loads(stock_list_env, object_pairs_hook=_unique_portfolio_object)
@@ -406,6 +417,7 @@ PORTFOLIO, PORTFOLIO_SOURCE, PORTFOLIO_ERROR = _select_portfolio(
     drive_requested=DRIVE_PORTFOLIO_CONFIGURED,
     has_credentials=_has_portfolio_credentials,
     in_ci=os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true",
+    drive_error=_drive_portfolio_error,
 )
 if PORTFOLIO_SOURCE != "drive":
     _kr_names_from_drive.clear()
