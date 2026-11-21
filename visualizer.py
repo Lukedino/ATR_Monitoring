@@ -70,7 +70,7 @@ def _rolling_chandelier_series(
 
     prev_stop: float | None = None
     for i in range(hh_window + period, len(df)):
-        hh  = df["High"].iloc[i - hh_window: i + 1].max()
+        hh  = df["High"].iloc[i - hh_window + 1: i + 1].max()   # 계산기와 같은 마지막 hh_window 봉
         atr = atr_series.iloc[i]
         pct = atr_pct.iloc[i]
         if pd.isna(atr):

@@ -86,3 +86,18 @@ def test_alert_path_sends_the_chart_for_an_unconfirmed_bar(monkeypatch):
 
     assert len(sent) == 1
     assert sent[0][0][:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_chart_stop_uses_the_same_highest_high_window_as_the_calculator():
+    """차트 Stop 궤적의 20일 고점은 계산기처럼 마지막 20봉(21봉 아님)이다.
+
+    궤적의 첫 계산 지점(직전 Stop 이 없어 trailing 이 끼지 않는다)의 21봉 전에 고점을 두면
+    창이 한 칸 넓을 때만 그 고점이 들어간다.
+    """
+    period, hh_window = 14, 20
+    frame = bars(60)
+    first = hh_window + period
+    frame.iloc[first - hh_window, frame.columns.get_loc("High")] += 50.0
+    stops = visualizer._rolling_chandelier_series(SYMBOL, frame, period, hh_window)
+    expected = calc_chandelier_stop(SYMBOL, frame.iloc[: first + 1], period, hh_window).stop_level
+    assert stops.iloc[first] == pytest.approx(expected, abs=1e-3)
