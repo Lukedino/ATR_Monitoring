@@ -288,3 +288,21 @@ def test_trigger_check_with_nearly_complete_collection_is_clean(env):
                             lambda *a: types.SimpleNamespace(has_trigger=False, triggers=[]))
     monitor.job_trigger_check()
     assert not monitor._problems
+
+
+@pytest.mark.parametrize("missing, problem", [(1, False), (2, True)])
+def test_trigger_check_small_portfolio_needs_two_missing_symbols_to_fail(env, missing, problem):
+    wanted = [f"S{i}" for i in range(4)]
+    env.monkeypatch.setattr(monitor, "ALL_SYMBOLS", wanted)
+    env.monkeypatch.setattr(monitor, "fetch_portfolio", lambda syms: {s: _bars(100.0) for s in wanted[missing:]})
+    env.monkeypatch.setattr(monitor, "check_immediate_triggers",
+                            lambda *a: types.SimpleNamespace(has_trigger=False, triggers=[]))
+    monitor.job_trigger_check()
+    assert bool(monitor._problems) is problem
+
+
+def test_trigger_check_single_symbol_total_failure_is_still_a_problem(env):
+    env.monkeypatch.setattr(monitor, "ALL_SYMBOLS", ["S0"])
+    env.monkeypatch.setattr(monitor, "fetch_portfolio", lambda syms: {})
+    monitor.job_trigger_check()
+    assert any("시세 수집 0/1" in p for p in monitor._problems)

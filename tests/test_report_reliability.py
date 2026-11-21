@@ -230,3 +230,15 @@ def test_report_with_nearly_complete_collection_is_clean(reports, monkeypatch):
     monitor.job_kr_daily_report()
     assert "ATR summary" in reports.sent
     assert not monitor._problems
+
+
+@pytest.mark.parametrize("missing, problem", [(1, False), (2, True)])
+def test_report_small_market_needs_two_missing_symbols_to_fail(reports, monkeypatch, missing, problem):
+    """작은 시장(4종목)에서 1종목 일시 실패로 실행을 빨갛게 만들지 않는다 — 누락 2종목 이상 그리고 80% 미만."""
+    symbols = [f"SYM-KR{i}" for i in range(4)]
+    reports.data.clear()
+    reports.data.update({s: _bars() for s in symbols[missing:]})
+    monkeypatch.setattr(monitor, "KR_SYMBOLS", symbols)
+    monitor.job_kr_daily_report()
+    assert "ATR summary" in reports.sent
+    assert bool(monitor._problems) is problem

@@ -150,6 +150,19 @@ _problems: list[str] = []
 
 # 시세를 받은 종목 비율이 이보다 낮으면 그 실행의 '이상 없음' 은 믿을 수 없다.
 MIN_COLLECTION_RATIO = 0.8
+# 트리거 체크·리포트는 누락이 이 종목 수 이상일 때만 비율을 따진다 — 작은 묶음(4종목 등)에서
+# 1종목 일시 실패로 실행을 빨갛게 만들지 않는다. 한 종목도 못 받았으면 수와 무관하게 실패.
+MIN_MISSING_FOR_PROBLEM = 2
+
+
+def _collection_short(collected: int, wanted: int) -> bool:
+    """트리거 체크(전체 종목 기준)·리포트(그 리포트의 시장 묶음 기준)의 수집 부족 판정.
+    job_stop_check 는 창을 열어 두고 재시도하는 별도 규칙(비율만)을 그대로 쓴다."""
+    if not wanted:
+        return False
+    if collected == 0:
+        return True
+    return wanted - collected >= MIN_MISSING_FOR_PROBLEM and collected < wanted * MIN_COLLECTION_RATIO
 
 
 def _portfolio_problem() -> str | None:
@@ -388,8 +401,8 @@ def _run_daily_report(symbols: list[str], title: str) -> None:
     if not ohlcv_map:
         raise RuntimeError(f"리포트 시세 수집 실패 — {title}")
     # 일부만 받았으면 본문은 받은 종목으로 그대로 보내되, 빠진 종목이 많으면 실행을 실패로 남긴다
-    # (job_stop_check 와 같은 수집률 규칙).
-    if len(ohlcv_map) < len(symbols) * MIN_COLLECTION_RATIO:
+    # (이 리포트의 시장 묶음 기준 — _collection_short).
+    if _collection_short(len(ohlcv_map), len(symbols)):
         _note_problem(f"시세 수집 {len(ohlcv_map)}/{len(symbols)} — {title}")
 
     summary = summarize_portfolio_atr(ohlcv_map, ATR_PERIOD)
@@ -498,10 +511,10 @@ def job_trigger_check() -> None:
     if unsent:
         _note_problem(f"텔레그램 전송 실패 {unsent}건 — 기록하지 않았으므로 다음 실행이 다시 보낸다")
 
-    # 시세를 못 받은 종목이 많으면 '트리거 없음' 은 '못 봤다' 는 뜻이다 — job_stop_check 와 같은 규칙.
+    # 시세를 못 받은 종목이 많으면 '트리거 없음' 은 '못 봤다' 는 뜻이다(전체 종목 기준 — _collection_short).
     # 받은 종목의 알림은 위에서 이미 나갔으므로 예외 대신 문제로만 올려 종료코드 1 로 끝낸다.
     collected = sum(1 for df in ohlcv_map.values() if not df.empty)
-    if ALL_SYMBOLS and collected < len(ALL_SYMBOLS) * MIN_COLLECTION_RATIO:
+    if _collection_short(collected, len(ALL_SYMBOLS)):
         _note_problem(f"시세 수집 {collected}/{len(ALL_SYMBOLS)}")
 
     if not found:
