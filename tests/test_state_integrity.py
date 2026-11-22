@@ -290,3 +290,42 @@ def test_drive_push_rejects_wrong_numeric_types_before_any_update(local_state):
     with pytest.raises(ds.StateSyncError):
         client.push()
     assert service.mock_files.updates == []
+
+
+@pytest.mark.parametrize("commit", [False, True])
+def test_stop_rise_that_rounds_to_the_same_value_is_held_not_updated(local_state, commit):
+    """저장값은 소수 4자리다. 반올림하면 같아지는 상향을 'UPDATED' 로 알리면 90 → 90 알림이 나간다."""
+    before = local_state.read_bytes()
+    result = sm.update_stop(SYMBOL, 90.00001, 100.0, commit=commit)
+    assert (result.updated, result.action) == (False, "HELD")
+    assert local_state.read_bytes() == before
+
+
+@pytest.mark.parametrize("new_stop, expected", [(90.0001, 90.0001), (89.9, 90.0), (89.99999, 90.0)])
+def test_trailing_stop_never_decreases_around_rounding(local_state, new_stop, expected):
+    sm.update_stop(SYMBOL, new_stop, 100.0)
+    assert sm.load_all()[SYMBOL].current_stop == expected
+
+
+KR_SYMBOL = "999993.KS"   # 합성 심볼
+
+
+@pytest.mark.parametrize("symbol, prev, new_stop", [
+    (SYMBOL, 90.0, 90.004),          # $90.00 → $90.00
+    (KR_SYMBOL, 57000.0, 57000.3),   # 57,000원 → 57,000원
+])
+def test_stop_rise_invisible_at_display_precision_is_held_without_notice(local_state, symbol, prev, new_stop):
+    """표시 정밀도로 같으면 'X → X' 알림을 내지 않는다. 저장은 4자리 판정 그대로 — 상향만 조용히 반영."""
+    data = state()
+    data["positions"][symbol] = {"symbol": symbol, "entry_price": prev * 1.1, "current_stop": prev,
+                                 "highest_high": prev * 1.2}
+    local_state.write_bytes(encoded(data))
+    result = sm.update_stop(symbol, new_stop, prev * 1.1, commit=False)
+    assert (result.updated, result.action) == (False, "HELD")
+    assert sm.load_all()[symbol].current_stop == round(new_stop, 4)
+
+
+def test_stop_rise_visible_at_display_precision_is_still_notified(local_state):
+    result = sm.update_stop(SYMBOL, 90.01, 100.0, commit=False)
+    assert (result.updated, result.action) == (True, "PENDING")
+    assert sm.load_all()[SYMBOL].current_stop == 90.0          # 판정만, 저장은 알림 뒤

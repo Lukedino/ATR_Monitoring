@@ -198,6 +198,12 @@ class UpdateResult:
         return round((self.new_stop - self.prev_stop) / self.prev_stop * 100, 2)
 
 
+def _same_on_display(symbol: str, a: float, b: float) -> bool:
+    """알림에 찍히는 가격(config.fmt_price)으로 두 값이 같은지."""
+    from config import fmt_price
+    return fmt_price(symbol, a) == fmt_price(symbol, b)
+
+
 @state_locked(_state_path)
 def update_stop(
     symbol:        str,
@@ -212,6 +218,9 @@ def update_stop(
     commit=False 면 판정만 하고 저장하지 않는다. 호출자는 '지정가 갱신 필요' 알림 전송이
     성공한 뒤 commit=True 로 다시 불러 저장한다 — 저장을 먼저 하면 전송 실패 시 다음 실행은
     new == current 라 그 알림이 영구히 사라진다(ATR-03).
+    예외: 4자리로는 상향이지만 표시값(원화 정수·달러 2자리)이 같으면 알림 없이 HELD 로 보고,
+    commit=False 여도 바로 저장한다(보낼 알림이 없으므로 유실될 것도 없다 — 표시 단위를 넘는
+    다음 상향에서 표시값 비교로 알림이 나간다).
 
     원칙: new_stop > current_stop 일 때만 갱신 (하향 절대 불가).
 
@@ -242,14 +251,32 @@ def update_stop(
         )
 
     prev_stop = rec.current_stop
-    if new_stop > prev_stop and not commit:
+    # 저장값(소수 4자리)으로 비교한다. 반올림하면 같아지는 상향을 갱신으로 보면 'X → X' 알림이 나간다.
+    rounded_stop = round(new_stop, 4)
+    if rounded_stop > prev_stop and _same_on_display(symbol, prev_stop, rounded_stop):
+        # 표시 정밀도(원화 정수·달러 2자리)로는 같다 — 사용자가 고칠 지정가가 없으니 알림 없이
+        # 상향만 저장한다. 전송 실패로 잃을 알림이 없으므로 commit=False 여도 바로 저장한다.
+        rec.current_stop = rounded_stop
+        rec.last_updated = _now()
+        if new_hh is not None:
+            rec.highest_high = round(new_hh, 4)
+        records[symbol] = rec
+        save_all(records)
+        logger.debug("Stop 상향(표시 동일 — 알림 없음): %s  %s → %s", symbol, prev_stop, rounded_stop)
+        return UpdateResult(
+            symbol=symbol, updated=False,
+            prev_stop=prev_stop, new_stop=rounded_stop,
+            current_close=current_close, action="HELD",
+            note="표시 정밀도로 같은 상향 — 알림 없이 저장",
+        )
+    if rounded_stop > prev_stop and not commit:
         return UpdateResult(
             symbol=symbol, updated=True,
-            prev_stop=prev_stop, new_stop=round(new_stop, 4),
+            prev_stop=prev_stop, new_stop=rounded_stop,
             current_close=current_close, action="PENDING",
         )
-    if new_stop > prev_stop:
-        rec.current_stop = round(new_stop, 4)
+    if rounded_stop > prev_stop:
+        rec.current_stop = rounded_stop
         rec.last_updated = _now()
         if new_hh is not None:
             rec.highest_high = round(new_hh, 4)

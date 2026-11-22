@@ -38,7 +38,7 @@
 | `.github/workflows/tests.yml` / `scripts/run_offline_tests.py` | 자격증명 없는 Python 3.11/3.12 합성 CI·코드 사본 실행기 |
 | `tests/` | 계산·상태·실패·마스킹·워크플로 합성 회귀 |
 | `analysis/` | ATR 배수 검증용 일회성 스크립트와 집계 결과. 운영 경로 아님 |
-| `DEVLOG.md`, `setup_github.sh`, `.env.example` | 개발 일지, 최초 업로드 스크립트, 환경변수 견본 |
+| `DEVLOG.md`, `.env.example` | 개발 일지, 환경변수 견본 |
 
 ## 3. 실행 구조
 - **트리거**: `workflow_dispatch` 뿐이다(`inputs.job`: `auto`·`stop_check`·`crypto_stop_check`·`kr_daily_report`·`us_daily_report`·`trigger_check`). `schedule:` 크론은 의도적으로 제거됐고, 비공개 디스패처 저장소가 창마다 1회 `job=auto` 로 호출한다. 디스패처 측 구현은 이 저장소에서 확인 불가 → **미확인**.

@@ -342,3 +342,14 @@ def test_common_validator_rejects_ambiguous_numeric_with_fixed_error(load_config
     module, _ = load_config({"STOCK_LIST": json.dumps(SYNTHETIC_LIST)})
     with pytest.raises(ValueError, match="^portfolio_symbol_market_required$"):
         module._validated_portfolio({"synthetic-private-group": ["SYM-FIRST", "999991.0"]})
+
+
+def test_legacy_xls_upload_is_rejected_with_a_convert_to_xlsx_error(load_config, caplog):
+    """openpyxl 은 .xls(BIFF) 를 읽지 못한다 — 받아 놓고 매번 실패하는 대신 변환하라고 알린다."""
+    module, calls = load_config({
+        "GITHUB_ACTIONS": "true", "GOOGLE_SERVICE_ACCOUNT_JSON": '{"synthetic": true}',
+        "GDRIVE_PORTFOLIO_FILE_ID": "synthetic-file",
+    }, mime="application/vnd.ms-excel")
+    assert_invalid(module, "drive_portfolio_xls_unsupported_convert_to_xlsx")
+    assert calls == ["credentials", "build", "metadata"]          # 읽을 수 없는 파일은 내려받지 않는다
+    assert ".xlsx" in caplog.text

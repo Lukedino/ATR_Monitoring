@@ -210,3 +210,35 @@ def test_successful_photo_still_returns_true(monkeypatch):
     response._content = b'{"ok":true}'
     monkeypatch.setattr(telegram.requests, "post", lambda *a, **k: response)
     assert telegram.send_photo(b"synthetic-png") is True
+
+
+def test_report_with_partial_collection_sends_body_but_records_a_problem(reports, monkeypatch):
+    symbols = [f"SYM-KR{i}" for i in range(5)]
+    reports.data.clear()
+    reports.data.update({s: _bars() for s in symbols[:2]})
+    monkeypatch.setattr(monitor, "KR_SYMBOLS", symbols)
+    monitor.job_kr_daily_report()
+    assert "ATR summary" in reports.sent
+    assert any("시세 수집 2/5" in p for p in monitor._problems)
+
+
+def test_report_with_nearly_complete_collection_is_clean(reports, monkeypatch):
+    symbols = [f"SYM-KR{i}" for i in range(5)]
+    reports.data.clear()
+    reports.data.update({s: _bars() for s in symbols[:4]})
+    monkeypatch.setattr(monitor, "KR_SYMBOLS", symbols)
+    monitor.job_kr_daily_report()
+    assert "ATR summary" in reports.sent
+    assert not monitor._problems
+
+
+@pytest.mark.parametrize("missing, problem", [(1, False), (2, True)])
+def test_report_small_market_needs_two_missing_symbols_to_fail(reports, monkeypatch, missing, problem):
+    """작은 시장(4종목)에서 1종목 일시 실패로 실행을 빨갛게 만들지 않는다 — 누락 2종목 이상 그리고 80% 미만."""
+    symbols = [f"SYM-KR{i}" for i in range(4)]
+    reports.data.clear()
+    reports.data.update({s: _bars() for s in symbols[missing:]})
+    monkeypatch.setattr(monitor, "KR_SYMBOLS", symbols)
+    monitor.job_kr_daily_report()
+    assert "ATR summary" in reports.sent
+    assert bool(monitor._problems) is problem
